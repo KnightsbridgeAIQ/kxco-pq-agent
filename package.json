@@ -1,0 +1,62 @@
+{
+  "name": "kxco-pq-agent",
+  "version": "1.0.0",
+  "description": "AI agent and robot identity for the KXCO post-quantum stack. Any KxcoIdentity holder may sponsor an agent with a locked ML-DSA-65 keypair and capability scope — payments, attestations, audit anchoring.",
+  "keywords": [
+    "post-quantum",
+    "pqc",
+    "ml-dsa",
+    "nist",
+    "fips-204",
+    "kxco",
+    "agent-identity",
+    "robot-identity",
+    "machine-identity",
+    "ai-agent",
+    "capability-scope",
+    "armature",
+    "relay",
+    "blockchain"
+  ],
+  "license": "Apache-2.0",
+  "author": "KXCO by Knightsbridge <hello@kxco.ai>",
+  "contributors": [
+    { "name": "Shayne Heffernan" },
+    { "name": "John Heffernan" }
+  ],
+  "homepage": "https://kxco.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JackKXCO/kxco-pq-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JackKXCO/kxco-pq-agent/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "dependencies": {
+    "kxco-post-quantum": "^1.1.6"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=30000 test/agent.test.js"
+  },
+  "funding": "https://kxco.ai",
+  "publishConfig": {
+    "access": "public"
+  }
+}
