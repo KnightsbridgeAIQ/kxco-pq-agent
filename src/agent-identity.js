@@ -294,6 +294,6 @@ export class KxcoAgentIdentity {
   static async revoke(agentKid, { chain, reason = '' } = {}) {
     if (!agentKid) throw new KxcoPqAgentError('revoke: agentKid is required')
     if (!chain)    throw new KxcoPqAgentError('revoke: chain is required for on-chain revocation')
-    await chain.revokeAgentCredential({ agentKid, reason })
+    return chain.revokeAgentCredential({ agentKid, reason })
   }
 }

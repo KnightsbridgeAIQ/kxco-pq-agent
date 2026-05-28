@@ -1,21 +1,18 @@
 # kxco-pq-agent
 
-Post-quantum AI agent and robot identity for the KXCO platform.
-
-Institutions that hold a `KxcoIdentity` (from `kxco-pq-sdk`) can sponsor machine identities — LLMs, robots, IoT devices, and automated processes — that cannot pass KYC themselves. The sponsoring institution signs the agent's ML-DSA-65 public key and a structured capability scope, anchoring the agent's authority to their own verified identity.
-
-**Not open source.** This package is part of the KXCO Chain platform. Contact hello@kxco.ai for licensing.
+Post-quantum identity for AI agents and autonomous systems.
 
 ---
 
-## How it works
+## The problem it solves
 
-1. A KYC'd institution generates an ML-DSA-65 keypair for the agent
-2. The institution signs a credential binding the agent's public key to a capability scope
-3. The agent presents this credential with every relay request, signed with its own private key
-4. The KXCO relay validates both the credential (institution's signature) and the intent (agent's signature) before submitting to chain
+AI systems cannot pass KYC. An LLM, robot, IoT device, or daemon has no legal standing to authenticate itself to a regulated network. This package solves that with a delegation model: a KYC-verified institution sponsors the agent by signing its ML-DSA-65 public key alongside a locked capability scope. The agent then signs its own relay operations independently, presenting the sponsor's credential as proof of authority. The KXCO relay validates both signatures before accepting any intent — the institution's approval is cryptographically bound to every action the agent takes.
 
-The credential scope is locked at issuance. To change an agent's permissions, revoke and re-issue.
+---
+
+## When to use this
+
+Use this package when deploying LLMs, robots, IoT devices, or daemons that need to perform on-chain operations — payments, attestation anchoring, audit checkpointing — with verifiable, auditable scope controlled by a licensed institution.
 
 ---
 
@@ -27,113 +24,130 @@ npm install kxco-pq-agent
 
 ---
 
-## Usage
-
-### Issue an agent credential
+## Quick start
 
 ```js
 import { KxcoAgentIdentity } from 'kxco-pq-agent'
 
-// `sponsor` is a KxcoIdentity from kxco-pq-sdk
+// sponsor is a KxcoIdentity from kxco-pq-sdk
+// it must have .kid (string) and .sign(Uint8Array) -> Promise<Uint8Array>
+
 const agent = await KxcoAgentIdentity.create({
   sponsor,
-  label:     'Trading Bot v2',
+  label:     'Settlement Bot',
   agentType: 'llm',
-  model:     'claude-opus-4-7',   // optional — model/firmware/version string
   scope: {
-    payments: {
-      maxPerTransaction: 5000,   // ARMR, in smallest denomination
-      maxPerDay:         50000,
-      allowedRecipients: [
-        '0xAbC123...',                // EVM address
-        'aa29f37ab7f4b2cf',           // KXCO kid
-      ],
-    },
-    attestations: {
-      purposes: ['trade-confirmation', 'settlement-receipt'],
-    },
-    auditLog:    true,
-    credentials: false,
+    attestations: { purposes: ['trade-confirmation'] },
+    auditLog: true,
   },
-  expiresIn: '90d',   // '30d', '1y', or seconds as a number
-  chain,              // optional KxcoChain — records the credential on-chain
+  expiresIn: '90d',
 })
-```
 
-### Sign a message
-
-```js
-const signature = await agent.sign(new TextEncoder().encode('hello'))
-```
-
-### Export and restore
-
-```js
-// Save to secure storage
-const exported = agent.export()
-
-// Restore in another process
-const restored = await KxcoAgentIdentity.import(exported)
-```
-
-### Send relay operations
-
-```js
-import { KxcoChain } from 'kxco-pq-chain'
-
-const chain = new KxcoChain({ relay: 'https://relay.kxco.ai', identity: sponsor })
+// Connect to the relay and anchor an attestation
 const client = agent.toChainClient('https://relay.kxco.ai')
 
 const result = await client.anchorAttestation({
   payloadHash: '9f86d081884c7d65...',
   purpose:     'trade-confirmation',
 })
-// → { txHash: '0x...', blockNumber: 228345 }
-
-await client.anchorAuditRoot({ rootHash: '...', entryCount: 100 })
-await client.transfer({ recipientKid: 'aa29f37ab7f4b2cf', amount: 1000 })
-```
-
-### Verify a credential
-
-```js
-const result = await KxcoAgentIdentity.verify(credential, {
-  sponsorPublicKey: sponsor.publicKey,  // optional — skip to check format only
-})
-// → { valid: true, agentKid: '...', sponsorKid: '...', scope: {...} }
-```
-
-### Revoke an agent
-
-```js
-await KxcoAgentIdentity.revoke(agent.credential.agentKid, {
-  chain,
-  reason: 'Decommissioned',
-})
+// { txHash: '0x...', blockNumber: 228345 }
 ```
 
 ---
 
 ## Scope manifest
 
-The scope is signed by the institution and cannot be modified after issuance.
+The scope is signed by the sponsor at issuance and cannot be changed. To update an agent's permissions, revoke and re-issue.
 
-```ts
-interface AgentScope {
-  payments?: {
-    maxPerTransaction: number   // in smallest denomination
-    maxPerDay:         number
-    allowedRecipients: string[] // EVM addresses (0x + 40 hex) or KXCO kids (16 hex)
-  }
-  attestations?: {
-    purposes: string[]          // allowed purpose strings
-  }
-  auditLog?:    boolean         // can anchor audit checkpoints
-  credentials?: boolean         // can manage credentials (use sparingly)
+```js
+scope: {
+  payments: {
+    maxPerTransaction: 5000,       // maximum ARMR per transfer (positive number)
+    maxPerDay:         50000,      // rolling daily cap across all transfers
+    allowedRecipients: [           // EVM address (0x + 40 hex) or KXCO kid (16 hex chars)
+      '0xAbCdEf...',
+      'aa29f37ab7f4b2cf',
+    ],
+  },
+  attestations: {
+    purposes: ['trade-confirmation', 'settlement-receipt'],  // allowed purpose strings
+  },
+  auditLog:    true,   // permits anchorAuditRoot calls
+  credentials: false,  // permits credential management (use sparingly)
 }
 ```
 
-The scope hash (SHA-256 of JCS-canonical scope JSON) is stored on-chain at issuance.
+All fields are optional. Omit a section entirely to deny that capability. The scope hash (SHA-256 of the JCS-canonical scope JSON) is stored on-chain at issuance so the relay can verify integrity.
+
+---
+
+## API
+
+### KxcoAgentIdentity
+
+**`KxcoAgentIdentity.create(opts)` → `Promise<KxcoAgentIdentity>`**
+
+Generates an ML-DSA-65 keypair for the agent and has the sponsor sign the credential.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `sponsor` | `{ kid: string, sign(msg: Uint8Array): Promise<Uint8Array> }` | Yes | The sponsoring KxcoIdentity |
+| `label` | `string` | Yes | Human-readable name for this agent |
+| `agentType` | `'llm' \| 'robot' \| 'iot' \| 'process'` | Yes | Category of the agent |
+| `model` | `string` | No | Model, firmware, or version identifier |
+| `scope` | `object` | Yes | Capability manifest (see above) |
+| `expiresIn` | `string \| number` | Yes | Duration: `'30d'`, `'1y'`, or seconds as a number |
+| `chain` | `KxcoChain` | No | If provided, registers the credential on-chain at issuance |
+
+**`agent.toChainClient(relay, opts?)` → `AgentChainClient`**
+
+Returns a relay client that automatically attaches the agent's credential and signature to every request.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `relay` | `string` | — | Relay base URL, e.g. `'https://relay.kxco.ai'` |
+| `opts.timeout` | `number` | `10000` | Request timeout in milliseconds |
+
+**`agent.sign(message)` → `Promise<Uint8Array>`**
+
+Signs an arbitrary message with the agent's ML-DSA-65 private key.
+
+**`agent.export()` → `object`**
+
+Serialises the full identity including the secret key. Store securely.
+
+**`KxcoAgentIdentity.import(exported)` → `Promise<KxcoAgentIdentity>`**
+
+Restores an agent identity from a previously exported object.
+
+**`KxcoAgentIdentity.verify(credential, opts?)` → `Promise<{ valid, agentKid, sponsorKid, scope, ... }>`**
+
+Verifies an agent credential envelope.
+
+- Without `opts.sponsorPublicKey`: checks format and expiry only.
+- With `opts.sponsorPublicKey` (Uint8Array): performs full ML-DSA-65 signature verification.
+
+**`KxcoAgentIdentity.revoke(agentKid, { chain, reason? })` → `Promise`**
+
+Revokes an agent credential on-chain. `chain` must be a KxcoChain instance belonging to the original sponsor.
+
+---
+
+### AgentChainClient
+
+Returned by `agent.toChainClient()`. All methods return `Promise<{ txHash: string, blockNumber: number }>`.
+
+**`client.anchorAttestation({ payloadHash, purpose })`**
+
+Anchors an attestation envelope hash on-chain. Requires `scope.attestations` with the matching purpose listed.
+
+**`client.anchorAuditRoot({ rootHash, entryCount })`**
+
+Anchors an audit log checkpoint on-chain. Requires `scope.auditLog: true`.
+
+**`client.transfer({ to, amount })`**
+
+Submits a payment intent. `to` is an EVM address or KXCO kid. `amount` is in ARMR. The relay enforces `allowedRecipients`, `maxPerTransaction`, and `maxPerDay` from the scope.
 
 ---
 
@@ -148,8 +162,26 @@ The scope hash (SHA-256 of JCS-canonical scope JSON) is stored on-chain at issua
 
 ---
 
+## What this does NOT do
+
+- Agents cannot issue credentials to other agents. Only a KYC-verified sponsor can create an agent identity.
+- Agents cannot exceed the scope declared at issuance. The relay enforces scope server-side; attempting an out-of-scope operation returns an error.
+- Agents cannot operate without a sponsor. There is no anonymous or self-signed credential mode.
+
+---
+
+## Part of the KXCO stack
+
+| Package | Purpose |
+|---------|---------|
+| `kxco-post-quantum` | ML-DSA-65 and ML-KEM primitives |
+| `kxco-pq-sdk` | KxcoIdentity — human and institution identities |
+| `kxco-pq-agent` | This package — machine and agent identities |
+
+Contact: hello@kxco.ai | https://kxco.ai
+
+---
+
 ## Authors
 
 Shayne Heffernan and John Heffernan — KXCO by Knightsbridge
-
-hello@kxco.ai | https://kxco.ai

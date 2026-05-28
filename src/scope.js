@@ -70,12 +70,12 @@ export function validateScope(scope) {
     }
   }
 
-  if (auditLog != null && (typeof auditLog !== 'object' || Array.isArray(auditLog))) {
-    throw new KxcoPqAgentError('scope.auditLog must be an object')
+  if (auditLog != null && typeof auditLog !== 'boolean' && (typeof auditLog !== 'object' || Array.isArray(auditLog))) {
+    throw new KxcoPqAgentError('scope.auditLog must be a boolean or object')
   }
 
-  if (credentials != null && (typeof credentials !== 'object' || Array.isArray(credentials))) {
-    throw new KxcoPqAgentError('scope.credentials must be an object')
+  if (credentials != null && typeof credentials !== 'boolean' && (typeof credentials !== 'object' || Array.isArray(credentials))) {
+    throw new KxcoPqAgentError('scope.credentials must be a boolean or object')
   }
 
   return scope
