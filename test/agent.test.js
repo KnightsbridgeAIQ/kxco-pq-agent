@@ -14,7 +14,7 @@ before(() => {
   sponsorKid     = fingerprint(sponsorKeypair.publicKey)
   mockSponsor    = {
     kid:          sponsorKid,
-    sign:         async (msg) => mlDsa.ml_dsa65.sign(sponsorKeypair.secretKey, msg),
+    sign:         async (msg) => Buffer.from(mlDsa.sign(sponsorKeypair.secretKey, msg), 'hex'),
     getPublicKey: async ()    => sponsorKeypair.publicKey,
   }
 })
@@ -109,14 +109,14 @@ describe('KxcoAgentIdentity sign', () => {
     const message = new TextEncoder().encode('test payload')
     const sig     = await agent.sign(message)
     const pubKey  = await agent.getPublicKey()
-    assert.ok(mlDsa.ml_dsa65.verify(pubKey, message, sig))
+    assert.ok(mlDsa.verify(pubKey, message, Buffer.from(sig).toString('hex')))
   })
 
   it('agent signature does not verify with sponsor key', async () => {
     const agent   = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'x', agentType: 'llm', scope: validScope, expiresIn: '7d' })
     const message = new TextEncoder().encode('test payload')
     const sig     = await agent.sign(message)
-    const ok      = mlDsa.ml_dsa65.verify(sponsorKeypair.publicKey, message, sig)
+    const ok      = mlDsa.verify(sponsorKeypair.publicKey, message, Buffer.from(sig).toString('hex'))
     assert.equal(ok, false)
   })
 })
@@ -138,7 +138,7 @@ describe('KxcoAgentIdentity export/import', () => {
     const msg = new TextEncoder().encode('round-trip test')
     const sig = await loaded.sign(msg)
     const pub = await loaded.getPublicKey()
-    assert.ok(mlDsa.ml_dsa65.verify(pub, msg, sig))
+    assert.ok(mlDsa.verify(pub, msg, Buffer.from(sig).toString('hex')))
   })
 
   it('throws for unsupported import format', async () => {
@@ -260,9 +260,8 @@ describe('AgentChainClient (toChainClient)', () => {
         ].join('\n'))
 
         const agentPubKey = await agent.getPublicKey()
-        const sigBytes    = new Uint8Array(Buffer.from(signature, 'hex'))
-        assert.ok(mlDsa.ml_dsa65.verify(agentPubKey, msg, sigBytes), 'intent must be signed by agent key')
-        assert.equal(mlDsa.ml_dsa65.verify(sponsorKeypair.publicKey, msg, sigBytes), false, 'sponsor key must not verify agent intent')
+        assert.ok(mlDsa.verify(agentPubKey, msg, signature), 'intent must be signed by agent key')
+        assert.equal(mlDsa.verify(sponsorKeypair.publicKey, msg, signature), false, 'sponsor key must not verify agent intent')
       }
     )
   })
