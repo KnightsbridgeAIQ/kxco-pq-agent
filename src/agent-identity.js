@@ -171,10 +171,10 @@ export class KxcoAgentIdentity {
     if (!this.#keypair?.secretKey) {
       throw new KxcoPqAgentError('no signing key — reconstruct with KxcoAgentIdentity.import()')
     }
-    return mlDsa.ml_dsa65.sign(
+    return Buffer.from(mlDsa.sign(
       new Uint8Array(this.#keypair.secretKey),
       new Uint8Array(message),
-    )
+    ), 'hex')
   }
 
   async getPublicKey() {
@@ -262,7 +262,7 @@ export class KxcoAgentIdentity {
       const msg = credentialSigningMsg({ agentKid, agentPublicKey, sponsorKid, agentType, label, model, scope, issuedAt, expiresAt })
       let ok
       try {
-        ok = mlDsa.ml_dsa65.verify(new Uint8Array(sponsorPublicKey), msg, fromB64url(sponsorSignature))
+        ok = mlDsa.verify(new Uint8Array(sponsorPublicKey), msg, Buffer.from(fromB64url(sponsorSignature)).toString('hex'))
       } catch {
         ok = false
       }
