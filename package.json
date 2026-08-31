@@ -1,6 +1,6 @@
 {
   "name": "kxco-pq-agent",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Post-quantum identity for AI agents and autonomous systems: a KYC-verified institution sponsors an ML-DSA-65 keypair and locked capability scope for any agent that cannot pass KYC itself.",
   "keywords": [
     "post-quantum",
