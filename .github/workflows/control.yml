@@ -1,0 +1,20 @@
+name: control
+
+# A deliberately trivial job, used as a control. If this fails with zero steps
+# and no runner assigned, the cause is at the account or repository level rather
+# than in the publish workflow, because there is nothing here to go wrong.
+#
+# Delete once the publish path is working.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "a runner picked this up"
