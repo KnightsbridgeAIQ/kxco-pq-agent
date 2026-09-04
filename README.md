@@ -189,11 +189,23 @@ Submits a payment intent. `to` is an EVM address or KXCO kid. `amount` is in ARM
 
 ---
 
-## What this does NOT do
+## The containment model
 
-- Agents cannot issue credentials to other agents. Only a KYC-verified sponsor can create an agent identity.
-- Agents cannot exceed the scope declared at issuance. The relay enforces scope server-side; attempting an out-of-scope operation returns an error.
-- Agents cannot operate without a sponsor. There is no anonymous or self-signed credential mode.
+Three properties hold for every agent identity, and they are the reason to use
+this rather than handing an agent a key.
+
+**An agent can never widen its own authority.** The capability scope is fixed
+at issuance and enforced relay-side, so an out-of-scope operation is refused
+before it reaches the chain. Compromising the agent does not enlarge what the
+agent may do.
+
+**An agent can never mint another agent.** Only a KYC-verified sponsor issues
+an identity, so there is no path from one compromised agent to a population of
+them.
+
+**Every agent traces to a named, KYC-verified institution.** There is no
+anonymous or self-signed mode, which is what makes an agent's action
+attributable to a legal entity when a supervisor asks who authorised it.
 
 ---
 
