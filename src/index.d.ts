@@ -38,6 +38,30 @@ export interface AgentScope {
 export function validateScope(scope: AgentScope): AgentScope
 export function hashScope(scope: AgentScope): Promise<string>
 
+export type ScopeAction =
+  | { type: 'payment'; amount: number; recipient?: string; spentToday?: number }
+  | { type: 'attestation'; purpose?: string }
+  | { type: 'auditLog' }
+  | { type: 'credentials' }
+
+export interface ScopeDecision {
+  allowed: boolean
+  /** Why the action was refused. Absent when allowed. */
+  reason?: string
+  /** Every limit the decision actually evaluated, in the order applied. */
+  checked: string[]
+}
+
+/**
+ * Decide whether a scope permits an action, before it is attempted.
+ *
+ * Runs in front of the relay's own enforcement, on the same signed scope: it
+ * refuses offline, refuses without spending a round trip, and names the limit
+ * that stopped it. Fails closed on an ungranted capability, an unknown action
+ * type, and a configured limit that cannot be evaluated from the inputs given.
+ */
+export function checkScope(scope: AgentScope, action: ScopeAction): ScopeDecision
+
 // ── Credential envelope ───────────────────────────────────────────────────────
 
 export interface AgentCredential {

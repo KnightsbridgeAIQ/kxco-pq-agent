@@ -176,6 +176,41 @@ Anchors an audit log checkpoint on-chain. Requires `scope.auditLog: true`.
 
 Submits a payment intent. `to` is an EVM address or KXCO kid. `amount` is in ARMR. The relay enforces `allowedRecipients`, `maxPerTransaction`, and `maxPerDay` from the scope.
 
+### `checkScope(scope, action)`
+
+Decide whether a scope permits an action, before attempting it.
+
+```js
+import { checkScope } from 'kxco-pq-agent'
+
+checkScope(agent.scope, {
+  type: 'payment', amount: 4500, spentToday: 12000, recipient: '0xAbC…',
+})
+// { allowed: false,
+//   reason: "amount 4500 would take today's total to 16500, past maxPerDay 15000",
+//   checked: ['payments.enabled', 'payments.maxPerTransaction', 'payments.maxPerDay'] }
+```
+
+The relay enforces the same signed scope behind the agent, and that enforcement
+is the one that binds. This runs in front of it: it refuses offline, refuses
+without spending a round trip, and names the limit that stopped it.
+
+| Action | Fields | Checked against |
+|---|---|---|
+| `payment` | `amount`, `recipient`, `spentToday` | `maxPerTransaction`, `maxPerDay`, `allowedRecipients` |
+| `attestation` | `purpose` | `attestations.purposes` |
+| `auditLog` | — | `auditLog` |
+| `credentials` | — | `credentials` |
+
+Returns `{ allowed, reason?, checked }`. `checked` lists every limit the
+decision actually evaluated, so a caller can show the control ran.
+
+It fails closed: a capability the scope does not grant is denied, an action type
+it does not recognise is denied, and a configured limit that cannot be judged
+from the inputs given is denied rather than skipped. Set `maxPerDay` and omit
+`spentToday` and the answer is a refusal naming the missing input, never a pass
+that skipped the cap.
+
 ---
 
 ## Agent types

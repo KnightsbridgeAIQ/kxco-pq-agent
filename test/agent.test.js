@@ -1,8 +1,8 @@
-import { describe, it, before } from 'node:test'
+import { describe, it, test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mlDsa, fingerprint } from 'kxco-post-quantum'
-import { KxcoAgentIdentity, KxcoPqAgentError } from '../src/index.js'
+import { KxcoAgentIdentity, KxcoPqAgentError, checkScope } from '../src/index.js'
 import { canonicalize } from '../src/jcs.js'
 
 // ── Mock sponsor ─────────────────────────────────────────────────────────────
@@ -285,5 +285,103 @@ describe('AgentChainClient (toChainClient)', () => {
         )
       }
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// checkScope — the same signed scope, enforced before the relay sees it
+// ---------------------------------------------------------------------------
+
+describe('checkScope', () => {
+  const scope = {
+    payments: {
+      maxPerTransaction: 5000,
+      maxPerDay: 50000,
+      allowedRecipients: ['0xAbCdEf0123456789AbCdEf0123456789AbCdEf01', 'aa29f37ab7f4b2cf'],
+    },
+    attestations: { purposes: ['trade-confirmation', 'settlement-receipt'] },
+    auditLog: true,
+    credentials: false,
+  }
+
+  test('permits a payment inside every limit', () => {
+    const d = checkScope(scope, {
+      type: 'payment', amount: 1000, spentToday: 0,
+      recipient: '0xAbCdEf0123456789AbCdEf0123456789AbCdEf01',
+    })
+    assert.equal(d.allowed, true)
+    assert.deepEqual(d.checked, [
+      'payments.enabled', 'payments.maxPerTransaction',
+      'payments.maxPerDay', 'payments.allowedRecipients',
+    ])
+  })
+
+  test('refuses over maxPerTransaction, naming the limit', () => {
+    const d = checkScope(scope, { type: 'payment', amount: 5001, spentToday: 0 })
+    assert.equal(d.allowed, false)
+    assert.match(d.reason, /exceeds maxPerTransaction 5000/)
+  })
+
+  test('refuses when the day cap would be crossed', () => {
+    const d = checkScope(scope, {
+      type: 'payment', amount: 1000, spentToday: 49500,
+      recipient: 'aa29f37ab7f4b2cf',
+    })
+    assert.equal(d.allowed, false)
+    assert.match(d.reason, /past maxPerDay 50000/)
+  })
+
+  test('a configured day cap is never silently skipped', () => {
+    // spentToday omitted: the limit exists and cannot be judged, so it denies
+    // rather than passing an unevaluated control.
+    const d = checkScope(scope, { type: 'payment', amount: 10 })
+    assert.equal(d.allowed, false)
+    assert.match(d.reason, /spentToday is required/)
+  })
+
+  test('refuses a recipient outside the list', () => {
+    const d = checkScope(scope, {
+      type: 'payment', amount: 10, spentToday: 0, recipient: '0x' + '1'.repeat(40),
+    })
+    assert.equal(d.allowed, false)
+    assert.match(d.reason, /not in allowedRecipients/)
+  })
+
+  test('EVM recipients match regardless of case', () => {
+    const d = checkScope(scope, {
+      type: 'payment', amount: 10, spentToday: 0,
+      recipient: '0xabcdef0123456789abcdef0123456789abcdef01',
+    })
+    assert.equal(d.allowed, true)
+  })
+
+  test('attestation purposes are held to the list', () => {
+    assert.equal(checkScope(scope, { type: 'attestation', purpose: 'trade-confirmation' }).allowed, true)
+    const d = checkScope(scope, { type: 'attestation', purpose: 'anything-else' })
+    assert.equal(d.allowed, false)
+    assert.match(d.reason, /not in attestations.purposes/)
+  })
+
+  test('a capability the scope withholds is refused', () => {
+    assert.equal(checkScope(scope, { type: 'auditLog' }).allowed, true)
+    assert.equal(checkScope(scope, { type: 'credentials' }).allowed, false)
+  })
+
+  test('a capability the scope never mentions is refused', () => {
+    const d = checkScope({ auditLog: true }, { type: 'payment', amount: 1 })
+    assert.equal(d.allowed, false)
+    assert.match(d.reason, /does not grant payments/)
+  })
+
+  test('an unrecognised action type is refused', () => {
+    const d = checkScope(scope, { type: 'wire-transfer' })
+    assert.equal(d.allowed, false)
+    assert.match(d.reason, /unknown action type/)
+  })
+
+  test('an empty scope grants nothing', () => {
+    for (const type of ['payment', 'attestation', 'auditLog', 'credentials']) {
+      assert.equal(checkScope({}, { type, amount: 1 }).allowed, false)
+    }
   })
 })
