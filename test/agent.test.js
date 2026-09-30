@@ -287,6 +287,62 @@ describe('AgentChainClient (toChainClient)', () => {
     )
   })
 
+  it('an intent header field with a line break or an unpaired surrogate is refused before anything is signed or sent', async () => {
+    let requests = 0
+    let captured = null
+    await withMockRelay(
+      (req, res) => {
+        requests++
+        let body = ''
+        req.on('data', c => { body += c })
+        req.on('end', () => {
+          captured = JSON.parse(body)
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, txHash: '0xabc', blockNumber: 1 }))
+        })
+      },
+      async (relayUrl) => {
+        const real = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'hdr', agentType: 'llm', scope: validScope, expiresIn: '1d' })
+        let signed = 0
+        // The members AgentChainClient reads, with one header field replaced.
+        const agentWith = (field, value) => ({
+          kid: real.kid, sponsorKid: real.sponsorKid, credential: real.credential,
+          sign: async (m) => { signed++; return real.sign(m) },
+          [field]: value,
+        })
+        for (const bad of ['a\nb', 'a\rb', 'x\uD800', '\uDC00y']) {
+          for (const field of ['kid', 'sponsorKid']) {
+            const client = new AgentChainClient({ relay: relayUrl, agent: agentWith(field, `${real[field]}${bad}`) })
+            await assert.rejects(
+              () => client.anchorAttestation({ payloadHash: 'a'.repeat(64), purpose: 'trade-confirmation' }),
+              (err) => err instanceof KxcoPqAgentError && err.code === 'BAD_ARGUMENT' && /line break or an unpaired surrogate/.test(err.message),
+              `${field}: ${JSON.stringify(bad)}`,
+            )
+          }
+        }
+        assert.equal(signed, 0)
+        assert.equal(requests, 0)
+
+        // A well-formed intent still goes out, signed over the bytes the relay rebuilds.
+        await new AgentChainClient({ relay: relayUrl, agent: agentWith('kid', real.kid) })
+          .anchorAttestation({ payloadHash: 'a'.repeat(64), purpose: 'trade-confirmation' })
+        assert.equal(requests, 1)
+        const { operation, agentKid, sponsorKid: skid, nonce, timestamp, credentialHash, payload, signature } = captured
+        const msg = new TextEncoder().encode([
+          'kxco-relay-agent-v1',
+          `operation: ${operation}`,
+          `agentKid: ${agentKid}`,
+          `sponsorKid: ${skid}`,
+          `nonce: ${nonce}`,
+          `timestamp: ${timestamp}`,
+          `credentialHash: ${credentialHash}`,
+          `payload: ${canonicalize(payload)}`,
+        ].join('\n'))
+        assert.ok(mlDsa.verify(await real.getPublicKey(), msg, signature))
+      }
+    )
+  })
+
   it('a relay that is not a string is refused with KxcoPqAgentError BAD_CONFIG', async () => {
     const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'cfg', agentType: 'llm', scope: validScope, expiresIn: '1d' })
     const refused = (err) => err instanceof KxcoPqAgentError && err.code === 'BAD_CONFIG'
