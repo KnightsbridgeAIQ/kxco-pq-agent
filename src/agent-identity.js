@@ -110,7 +110,11 @@ export class KxcoAgentIdentity {
     const agentKid     = fingerprint(keypair.publicKey)
     const agentPubB64  = b64url(keypair.publicKey)
     const issuedAt     = new Date().toISOString()
-    const expiresAt    = new Date(Date.now() + parseDuration(expiresIn)).toISOString()
+    const expiry       = new Date(Date.now() + parseDuration(expiresIn))
+    if (Number.isNaN(expiry.getTime())) {
+      throw new KxcoPqAgentError(`create: expiresIn '${expiresIn}' does not give a representable expiry date`)
+    }
+    const expiresAt    = expiry.toISOString()
 
     const sigMsg = credentialSigningMsg({
       agentKid,
@@ -204,6 +208,9 @@ export class KxcoAgentIdentity {
     if (!exported || exported['kxco-agent-identity'] !== IDENTITY_VERSION) {
       throw new KxcoPqAgentError('import: invalid or unsupported agent identity format')
     }
+    // The restored agent acts on this scope, so it is held to the rules
+    // create() applied.
+    validateScope(exported.scope)
     return new KxcoAgentIdentity({
       kid:        exported.kid,
       keypair:    { secretKey: fromB64url(exported.secretKey), publicKey: fromB64url(exported.publicKey) },
@@ -254,7 +261,21 @@ export class KxcoAgentIdentity {
       return { valid: false, error: 'malformed credential — missing required fields' }
     }
 
-    if (new Date(expiresAt) < new Date()) {
+    // The scope is returned for the caller to act on, so it is held to the
+    // rules create() applied. That also means it has a JCS form to check the
+    // signature over.
+    try {
+      validateScope(scope)
+    } catch (err) {
+      return { valid: false, error: `malformed credential: ${err.message}` }
+    }
+
+    // An expiry that is not a date cannot be shown to lie in the future.
+    const expiry = new Date(expiresAt).getTime()
+    if (Number.isNaN(expiry)) {
+      return { valid: false, error: 'agent credential has no valid expiry, so it is treated as expired' }
+    }
+    if (expiry < Date.now()) {
       return { valid: false, error: 'agent credential has expired' }
     }
 

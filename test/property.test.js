@@ -112,30 +112,35 @@ const scope = fc.record({
 }).map(leaveOutUndefined)
 
 // A scope-shaped value where any slot may hold the wrong thing: wrong types,
-// empty and blank strings, zero and negative limits, malformed recipients.
-// Each slot is usually plausible, so a fair share of cases are well formed.
+// empty and blank strings, zero, negative and fractional limits, NaN and the
+// infinities, switches that are not booleans, malformed recipients. Each slot
+// is usually plausible, so a fair share of cases are well formed.
 const junk = fc.oneof(
   fc.integer({ min: -5, max: 5 }),
+  fc.double(),
   fc.string({ maxLength: 8 }),
   fc.boolean(),
   fc.constant(null),
+  fc.constant({ toString: 1 }),
   fc.array(fc.oneof(fc.string({ maxLength: 8 }), fc.integer()), { maxLength: 3 }),
 )
 const mostly = (good, bad = junk) => fc.oneof({ weight: 4, arbitrary: good }, { weight: 1, arbitrary: bad })
 const messyLimit = mostly(fc.integer({ min: -100, max: 1_000_000 }))
+const messyEnabled = mostly(enabled)
+const messyToggle = fc.oneof(fc.boolean(), fc.record({ enabled: messyEnabled }, { requiredKeys: [] }))
 const messyScope = mostly(fc.record({
   payments: mostly(fc.record({
-    enabled,
+    enabled: messyEnabled,
     maxPerTransaction: messyLimit,
     maxPerDay: messyLimit,
-    allowedRecipients: mostly(fc.array(mostly(recipient, fc.oneof(fc.string({ maxLength: 20 }), fc.integer())), { maxLength: 4 })),
+    allowedRecipients: mostly(fc.array(mostly(recipient, fc.oneof(fc.string({ maxLength: 20 }), junk, recipient.map((r) => [r]))), { maxLength: 4 })),
   }, { requiredKeys: [] })),
   attestations: mostly(fc.record({
-    enabled,
-    purposes: mostly(fc.array(mostly(purpose, fc.oneof(fc.constantFrom('', '  '), fc.integer())), { maxLength: 4 })),
+    enabled: messyEnabled,
+    purposes: mostly(fc.array(mostly(purpose, fc.oneof(fc.constantFrom('', '  '), junk)), { maxLength: 4 })),
   }, { requiredKeys: [] })),
-  auditLog: mostly(toggle),
-  credentials: mostly(toggle),
+  auditLog: mostly(messyToggle),
+  credentials: mostly(messyToggle),
 }, { requiredKeys: [] }))
 
 // An action carrying every field the four types read, each sometimes missing
@@ -143,11 +148,15 @@ const messyScope = mostly(fc.record({
 const amount = fc.oneof(
   { weight: 4, arbitrary: fc.integer({ min: 1, max: 1000 }) },
   { weight: 2, arbitrary: fc.integer({ min: -10, max: 2_000_000 }) },
+  { weight: 1, arbitrary: fc.double() },
+  { weight: 1, arbitrary: fc.constantFrom(NaN, Infinity) },
   { weight: 1, arbitrary: fc.constantFrom(undefined, null, 0, '100', true) },
 )
 const spentToday = fc.oneof(
   { weight: 4, arbitrary: fc.integer({ min: 0, max: 1000 }) },
   { weight: 2, arbitrary: fc.integer({ min: -10, max: 2_000_000 }) },
+  { weight: 1, arbitrary: fc.double() },
+  { weight: 1, arbitrary: fc.constantFrom(NaN, Infinity, -Infinity) },
   { weight: 1, arbitrary: fc.constantFrom(undefined, null, '0') },
 )
 const actionRecipient = fc.oneof(
@@ -164,17 +173,24 @@ const action = fc.record({
   purpose: actionPurpose,
 })
 
-// JSON inside the JCS subset (integers, no floats), with identifier keys, as
-// scope keys are.
-const jcsJson = fc.letrec((tie) => ({
+// A JSON-shaped value with any keys, integer-like names and "__proto__" among
+// them, and now and then a fraction, NaN or an infinity, which JCS refuses.
+// Objects are built with Object.fromEntries, so "__proto__" is an own key.
+const anyKey = fc.oneof(
+  { weight: 6, arbitrary: fc.string({ unit: 'binary', maxLength: 8 }) },
+  { weight: 3, arbitrary: fc.nat(1000).map(String) },
+  { weight: 1, arbitrary: fc.constant('__proto__') },
+)
+const anyJson = fc.letrec((tie) => ({
   value: fc.oneof(
     { depthSize: 'small' },
-    fc.constant(null),
-    fc.boolean(),
-    fc.integer(),
-    fc.string({ maxLength: 12 }),
-    fc.array(tie('value'), { maxLength: 4 }),
-    fc.dictionary(fc.stringMatching(/^[a-z][a-zA-Z0-9]{0,11}$/), tie('value'), { maxKeys: 4 }),
+    { weight: 3, arbitrary: fc.constant(null) },
+    { weight: 3, arbitrary: fc.boolean() },
+    { weight: 3, arbitrary: fc.integer() },
+    { weight: 1, arbitrary: fc.double() },
+    { weight: 3, arbitrary: fc.string({ maxLength: 12 }) },
+    { weight: 3, arbitrary: fc.array(tie('value'), { maxLength: 4 }) },
+    { weight: 3, arbitrary: fc.uniqueArray(fc.tuple(anyKey, tie('value')), { maxLength: 4, selector: ([k]) => k }).map(Object.fromEntries) },
   ),
 })).value
 
@@ -185,28 +201,30 @@ function granted(s) {
 }
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
-const isLimit = (v) => v === undefined || (typeof v === 'number' && v > 0)
+const isLimit = (v) => v === undefined || (Number.isInteger(v) && v > 0)
+const switchOk = (section) => !isPlainObject(section) || section.enabled === undefined || typeof section.enabled === 'boolean'
 
 // Whether a scope obeys the manifest rules: sections are objects (auditLog and
-// credentials may also be booleans), limits are positive numbers with the
-// transaction cap inside the day cap, recipients are EVM addresses or kids,
-// and purposes are non-empty strings. A section switched off is not checked.
+// credentials may also be booleans) whose `enabled`, if present, is a boolean;
+// limits are positive integers with the transaction cap inside the day cap;
+// recipients are EVM addresses or kids, as strings; and purposes are non-empty
+// strings. A section switched off is not checked further.
 function wellFormed(sc) {
   if (!isPlainObject(sc)) return false
   const { payments: p, attestations: t, auditLog, credentials } = sc
   if (p != null) {
-    if (!isPlainObject(p)) return false
+    if (!isPlainObject(p) || !switchOk(p)) return false
     if (p.enabled !== false) {
       if (!isLimit(p.maxPerTransaction) || !isLimit(p.maxPerDay)) return false
       if (p.maxPerTransaction !== undefined && p.maxPerDay !== undefined && p.maxPerTransaction > p.maxPerDay) return false
       if (p.allowedRecipients !== undefined) {
         if (!Array.isArray(p.allowedRecipients)) return false
-        if (!p.allowedRecipients.every((r) => /^0x[0-9a-fA-F]{40}$/.test(r) || /^[0-9a-f]{16}$/.test(r))) return false
+        if (!p.allowedRecipients.every((r) => typeof r === 'string' && (/^0x[0-9a-fA-F]{40}$/.test(r) || /^[0-9a-f]{16}$/.test(r)))) return false
       }
     }
   }
   if (t != null) {
-    if (!isPlainObject(t)) return false
+    if (!isPlainObject(t) || !switchOk(t)) return false
     if (t.enabled !== false && t.purposes !== undefined) {
       if (!Array.isArray(t.purposes)) return false
       if (!t.purposes.every((x) => typeof x === 'string' && x.trim() !== '')) return false
@@ -214,7 +232,33 @@ function wellFormed(sc) {
   }
   for (const toggleValue of [auditLog, credentials]) {
     if (toggleValue != null && typeof toggleValue !== 'boolean' && !isPlainObject(toggleValue)) return false
+    if (!switchOk(toggleValue)) return false
   }
+  return true
+}
+
+// Whether JCS can sign a value: every number an integer, and no object key
+// named "__proto__".
+function signable(v) {
+  if (typeof v === 'number') return Number.isInteger(v)
+  if (Array.isArray(v)) return v.every(signable)
+  if (v !== null && typeof v === 'object') return !Object.hasOwn(v, '__proto__') && Object.values(v).every(signable)
+  return true
+}
+
+// Whether the section an action reads, and each limit in it, has the type the
+// README gives it. Nothing else can be judged.
+const SECTION_OF = { payment: 'payments', attestation: 'attestations', auditLog: 'auditLog', credentials: 'credentials' }
+function sectionSound(sc, type) {
+  const name = SECTION_OF[type]
+  const s = name && sc[name]
+  if (!name || s == null || s === false) return true
+  if (s === true) return name === 'auditLog' || name === 'credentials'
+  if (!isPlainObject(s) || !switchOk(s)) return false
+  const limit = (v) => v === undefined || (Number.isFinite(v) && v > 0)
+  const strings = (v) => v === undefined || (Array.isArray(v) && v.every((x) => typeof x === 'string'))
+  if (name === 'payments') return limit(s.maxPerTransaction) && limit(s.maxPerDay) && strings(s.allowedRecipients)
+  if (name === 'attestations') return strings(s.purposes)
   return true
 }
 
@@ -224,10 +268,10 @@ function permitted(scope, a) {
     case 'payment': {
       const p = scope.payments
       if (!granted(p)) return false
-      if (typeof a.amount !== 'number' || !(a.amount > 0)) return false
+      if (!Number.isFinite(a.amount) || !(a.amount > 0)) return false
       if (p.maxPerTransaction !== undefined && a.amount > p.maxPerTransaction) return false
       if (p.maxPerDay !== undefined) {
-        if (typeof a.spentToday !== 'number' || a.spentToday < 0) return false
+        if (!Number.isFinite(a.spentToday) || a.spentToday < 0) return false
         if (a.spentToday + a.amount > p.maxPerDay) return false
       }
       if (p.allowedRecipients !== undefined) {
@@ -316,6 +360,11 @@ test('verify: changing any one signed field of a credential makes it fail', asyn
       tampered.push(withoutModel)
     }
     tampered.push({ ...original, scope: canonicalize(c.sc) === canonicalize(original.scope) ? { ...c.sc, added: 1 } : c.sc })
+    // A member named "__proto__" added to the signed scope, as JSON.parse would
+    // leave it: an own key, not the prototype.
+    const withProto = JSON.parse(JSON.stringify(original.scope))
+    Object.defineProperty(withProto, '__proto__', { value: c.sc, enumerable: true, writable: true, configurable: true })
+    tampered.push({ ...original, scope: withProto })
     tampered.push({ ...original, sponsorSignature: flipByte(original.sponsorSignature, c.at) })
 
     for (const credential of tampered) {
@@ -335,7 +384,7 @@ test('verify: a credential-shaped object the sponsor never signed does not verif
     sponsorKid: fc.constantFrom(A.sponsor.kid, 'aa29f37ab7f4b2cf'),
     agentType: fc.oneof(agentType, fc.string()),
     label: fc.string(),
-    scope: jcsJson,
+    scope: anyJson,
     issuedAt: fc.constantFrom(new Date().toISOString()),
     expiresAt: fc.oneof(fc.constant(future), fc.string()),
     sponsorSignature: fc.oneof(fc.uint8Array({ minLength: 3309, maxLength: 3309 }), fc.uint8Array({ maxLength: 64 }))
@@ -347,15 +396,18 @@ test('verify: a credential-shaped object the sponsor never signed does not verif
   }), { numRuns: 100 })
 })
 
-test('verify without a sponsor key: a past expiresAt is refused and a future one passes', async () => {
+test('verify without a sponsor key: a past expiresAt is refused, one that is not a date counts as expired, and a future one passes', async () => {
   const agent = await KxcoAgentIdentity.create({ sponsor: A.sponsor, label: 'expiry', agentType: 'process', scope: {}, expiresIn: '1d' })
   const now = Date.now()
   const past = fc.date({ min: new Date(0), max: new Date(now - 1000), noInvalidDate: true })
   const future = fc.date({ min: new Date(now + 3_600_000), max: new Date('2200-01-01T00:00:00Z'), noInvalidDate: true })
-  await fc.assert(fc.asyncProperty(past, future, async (p, f) => {
+  const notADate = fc.string().filter((s) => s !== '' && Number.isNaN(new Date(s).getTime()))
+  await fc.assert(fc.asyncProperty(past, future, notADate, async (p, f, n) => {
     const expired = await KxcoAgentIdentity.verify({ ...agent.credential, expiresAt: p.toISOString() })
     const current = await KxcoAgentIdentity.verify({ ...agent.credential, expiresAt: f.toISOString() })
-    return expired.valid === false && /expired/.test(expired.error) && current.valid === true
+    const unreadable = await KxcoAgentIdentity.verify({ ...agent.credential, expiresAt: n })
+    return expired.valid === false && /expired/.test(expired.error) && current.valid === true &&
+      unreadable.valid === false && /expired/.test(unreadable.error)
   }), { numRuns: 300 })
 })
 
@@ -392,6 +444,18 @@ test('checkScope: allows an action that is inside every configured limit', () =>
   }), { numRuns: 500 })
 })
 
+test('checkScope: on any scope-shaped value, allows an action only when the section it reads is well formed and the rules permit it', () => {
+  fc.assert(fc.property(messyScope, action, (sc, a) => {
+    if (!isPlainObject(sc)) {
+      assert.throws(() => checkScope(sc, a), KxcoPqAgentError)
+      return true
+    }
+    const d = checkScope(sc, a)
+    if (!d.allowed) return typeof d.reason === 'string'
+    return sectionSound(sc, a.type) && permitted(sc, a)
+  }), { numRuns: 5000 })
+})
+
 test('checkScope: a capability the scope withholds or never mentions is refused, whatever the action carries', () => {
   const withheld = fc.constantFrom('omit', false, null, { enabled: false })
   const sectionOf = { payment: 'payments', attestation: 'attestations', auditLog: 'auditLog', credentials: 'credentials' }
@@ -418,16 +482,20 @@ test('validateScope: accepts exactly the well-formed scopes, refuses the rest wi
     try {
       accepted = validateScope(sc)
     } catch (err) {
-      return err instanceof KxcoPqAgentError && !wellFormed(sc)
+      return err instanceof KxcoPqAgentError && !(wellFormed(sc) && signable(sc))
     }
-    if (accepted !== sc || !wellFormed(sc)) return false
+    if (accepted !== sc || !wellFormed(sc) || !signable(sc)) return false
     const d = checkScope(sc, a)
     return d.allowed === false || permitted(sc, a)
   }), PURE)
 })
 
-test('hashScope: 64 hex characters, the SHA-256 of the JCS form, whatever the key order', async () => {
-  await fc.assert(fc.asyncProperty(fc.oneof(scope, jcsJson), async (sc) => {
+test('hashScope: 64 hex characters, the SHA-256 of the JCS form, whatever the key order, and a value JCS cannot sign is refused with KxcoPqAgentError', async () => {
+  await fc.assert(fc.asyncProperty(fc.oneof(scope, anyJson), async (sc) => {
+    if (!signable(sc)) {
+      await assert.rejects(hashScope(sc), KxcoPqAgentError)
+      return true
+    }
     const h = await hashScope(sc)
     const expected = createHash('sha256').update(canonicalize(sc)).digest('hex')
     return /^[0-9a-f]{64}$/.test(h) &&
