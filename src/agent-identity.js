@@ -41,6 +41,26 @@ function credentialSigningMsg({ agentKid, agentPublicKey, sponsorKid, agentType,
   ].join('\n'))
 }
 
+// The sponsor-signed message is one field per line, so a field carrying a
+// line break could hand part of its text to its neighbour, and two different
+// credentials would sign the same bytes. An unpaired surrogate has no UTF-8
+// form (TextEncoder writes every one as U+FFFD), so it is refused as well.
+const UNSAFE_FIELD = /[\r\n]|\p{Cs}/u
+
+// Why the first of these fields cannot go into the message, or null.
+function fieldFault(fields) {
+  for (const [name, value] of Object.entries(fields)) {
+    let text
+    try {
+      text = value == null ? '' : `${value}`
+    } catch {
+      return `${name} cannot be written as text`
+    }
+    if (UNSAFE_FIELD.test(text)) return `${name} must not contain a line break or an unpaired surrogate`
+  }
+  return null
+}
+
 const VALID_AGENT_TYPES = new Set(['llm', 'robot', 'iot', 'process'])
 
 export class KxcoAgentIdentity {
@@ -103,6 +123,9 @@ export class KxcoAgentIdentity {
     }
     if (!scope)                       throw new KxcoPqAgentError('create: scope is required')
     if (expiresIn == null)            throw new KxcoPqAgentError('create: expiresIn is required — agents must have an expiry')
+
+    const fault = fieldFault({ label, model, sponsorKid: sponsor.kid })
+    if (fault) throw new KxcoPqAgentError(`create: ${fault}`)
 
     validateScope(scope)
 
@@ -260,6 +283,9 @@ export class KxcoAgentIdentity {
     if (!agentKid || !agentPublicKey || !sponsorKid || !agentType || !issuedAt || !expiresAt || !sponsorSignature) {
       return { valid: false, error: 'malformed credential — missing required fields' }
     }
+
+    const fault = fieldFault({ agentKid, agentPublicKey, sponsorKid, agentType, label, model, issuedAt, expiresAt })
+    if (fault) return { valid: false, error: `malformed credential: ${fault}` }
 
     // The scope is returned for the caller to act on, so it is held to the
     // rules create() applied. That also means it has a JCS form to check the

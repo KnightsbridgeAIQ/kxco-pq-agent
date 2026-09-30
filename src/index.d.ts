@@ -24,7 +24,10 @@ export interface PaymentScope {
 
 export interface AttestationScope {
   enabled:   boolean
-  /** Allowed purposes. Empty array = any purpose. */
+  /**
+   * Allowed purposes. Empty array = no purpose is allowed (checkScope fails
+   * closed). Absent / undefined = any purpose.
+   */
   purposes?: string[]
 }
 

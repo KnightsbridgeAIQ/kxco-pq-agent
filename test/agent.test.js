@@ -2,7 +2,7 @@ import { describe, it, test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mlDsa, fingerprint } from 'kxco-post-quantum'
-import { KxcoAgentIdentity, KxcoPqAgentError, checkScope, validateScope, hashScope } from '../src/index.js'
+import { KxcoAgentIdentity, AgentChainClient, KxcoPqAgentError, checkScope, validateScope, hashScope } from '../src/index.js'
 import { canonicalize } from '../src/jcs.js'
 
 // ── Mock sponsor ─────────────────────────────────────────────────────────────
@@ -286,6 +286,15 @@ describe('AgentChainClient (toChainClient)', () => {
       }
     )
   })
+
+  it('a relay that is not a string is refused with KxcoPqAgentError BAD_CONFIG', async () => {
+    const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'cfg', agentType: 'llm', scope: validScope, expiresIn: '1d' })
+    const refused = (err) => err instanceof KxcoPqAgentError && err.code === 'BAD_CONFIG'
+    for (const relay of [123, {}, [], true]) {
+      assert.throws(() => agent.toChainClient(relay), refused, JSON.stringify(relay))
+      assert.throws(() => new AgentChainClient({ relay, agent }), refused, JSON.stringify(relay))
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -449,6 +458,16 @@ describe('checkScope', () => {
 
 const isAgentError = (err) => err instanceof KxcoPqAgentError
 
+// The sponsor-signed message as the relay recomputes it. Used to sign a
+// credential the way an earlier version could, with a line break in a field.
+function signedAsBefore(c, secretKey) {
+  const msg = new TextEncoder().encode([
+    'kxco-agent-credential-v1', c.agentKid, c.agentPublicKey, c.sponsorKid, c.agentType,
+    c.label, c.model ?? '', canonicalize(c.scope), c.issuedAt, c.expiresAt,
+  ].join('\n'))
+  return { ...c, sponsorSignature: Buffer.from(mlDsa.sign(secretKey, msg), 'hex').toString('base64url') }
+}
+
 describe('scope rules at every entry point', () => {
   test('validateScope refuses a limit that is not a positive integer', () => {
     for (const bad of [NaN, Infinity, -Infinity, 0, -1, 2.5, '5']) {
@@ -531,6 +550,42 @@ describe('scope rules at every entry point', () => {
     assert.equal(r.valid, false)
     assert.match(r.error, /purposes/)
     await assert.rejects(() => KxcoAgentIdentity.import({ ...agent.export(), scope: malformed }), isAgentError)
+  })
+
+  test('create refuses a line break or an unpaired surrogate in label, model or the sponsor kid', async () => {
+    for (const bad of ['a\nb', 'a\rb', 'x\uD800', '\uDC00y']) {
+      for (const opts of [{ label: bad }, { model: bad }, { sponsor: { ...mockSponsor, kid: `${mockSponsor.kid}${bad}` } }]) {
+        await assert.rejects(
+          () => KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'x', agentType: 'llm', scope: {}, expiresIn: '1d', ...opts }),
+          (err) => err instanceof KxcoPqAgentError && /line break or an unpaired surrogate/.test(err.message),
+          JSON.stringify(opts),
+        )
+      }
+    }
+  })
+
+  test('verify refuses text moved between neighbouring fields, and an unpaired surrogate standing in for U+FFFD', async () => {
+    const opts = { sponsorPublicKey: sponsorKeypair.publicKey }
+    const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'Settlement', agentType: 'llm', scope: validScope, expiresIn: '30d' })
+    // A credential an earlier version could sign: a line break in its label, and no model.
+    const { model: _none, ...base } = agent.credential
+    const earlier = signedAsBefore({ ...base, label: 'Settlement\nBot' }, sponsorKeypair.secretKey)
+    for (const presented of [
+      earlier,
+      { ...earlier, label: 'Settlement', model: 'Bot\n' },
+      { ...earlier, agentType: 'llm\nSettlement', label: 'Bot' },
+    ]) {
+      const r = await KxcoAgentIdentity.verify(presented, opts)
+      assert.equal(r.valid, false, JSON.stringify([presented.agentType, presented.label, presented.model]))
+      assert.match(r.error, /line break or an unpaired surrogate/)
+    }
+
+    // U+FFFD is a character like any other, and signs; an unpaired surrogate
+    // would encode to the same bytes, so it cannot stand in for it.
+    const replacement = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'bot\uFFFD', agentType: 'llm', scope: validScope, expiresIn: '30d' })
+    assert.equal((await KxcoAgentIdentity.verify(replacement.credential, opts)).valid, true)
+    const r = await KxcoAgentIdentity.verify({ ...replacement.credential, label: 'bot\uD800' }, opts)
+    assert.equal(r.valid, false)
   })
 
   test('verify treats an expiresAt that is not a date as expired', async () => {

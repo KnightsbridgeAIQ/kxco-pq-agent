@@ -47,11 +47,13 @@ const B = localSponsor('kxco-pq-agent-property-sponsor-b')
 
 const ACTION_TYPES = ['payment', 'attestation', 'auditLog', 'credentials']
 const agentType = fc.constantFrom('llm', 'robot', 'iot', 'process')
-// Any non-empty text, control characters and newlines included: the signing
-// message is line-joined, so a newline inside a field is worth trying.
+// Any non-empty text, control characters, line breaks and unpaired surrogates
+// included: the signing message is line-joined, so create() refuses a line
+// break or an unpaired surrogate in a field, and both are worth trying.
 const text = fc.oneof(
   fc.string({ unit: 'grapheme', minLength: 1, maxLength: 30 }),
   fc.string({ unit: 'binary-ascii', minLength: 1, maxLength: 30 }),
+  fc.string({ unit: fc.constantFrom('a', '\n', '\r', '\uFFFD', '\uD800', '\uDBFF', '\uDC00', '\uD83D\uDE00'), minLength: 1, maxLength: 6 }),
 )
 const model = fc.option(text, { nil: undefined })
 const expiresIn = fc.oneof(
@@ -307,6 +309,44 @@ function configuredLimits(scope, a) {
 
 const SIGNED_STRING_FIELDS = ['kxco-agent', 'agentKid', 'agentPublicKey', 'sponsorKid', 'agentType', 'label', 'issuedAt', 'expiresAt']
 
+// Whether a string holds a UTF-16 surrogate that is not half of a pair.
+function hasLoneSurrogate(str) {
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const d = str.charCodeAt(i + 1)
+      if (d >= 0xdc00 && d <= 0xdfff) { i++; continue }
+      return true
+    }
+    if (c >= 0xdc00 && c <= 0xdfff) return true
+  }
+  return false
+}
+// Whether text could pass part of itself to a neighbouring line of the signed
+// message, or has no UTF-8 form of its own.
+const unsafe = (v) => typeof v === 'string' && (v.includes('\n') || v.includes('\r') || hasLoneSurrogate(v))
+
+// create(), except that for a label or model it must refuse this checks the
+// refusal and gives null.
+async function createChecked(opts) {
+  if (unsafe(opts.label) || unsafe(opts.model)) {
+    await assert.rejects(KxcoAgentIdentity.create(opts), KxcoPqAgentError)
+    return null
+  }
+  return KxcoAgentIdentity.create(opts)
+}
+
+// The sponsor-signed message as the relay recomputes it, signed by `who`. Used
+// to sign a credential the way an earlier version could, with a line break in
+// a field.
+async function signedAsBefore(c, who) {
+  const msg = new TextEncoder().encode([
+    'kxco-agent-credential-v1', c.agentKid, c.agentPublicKey, c.sponsorKid, c.agentType,
+    c.label, c.model ?? '', canonicalize(c.scope), c.issuedAt, c.expiresAt,
+  ].join('\n'))
+  return { ...c, sponsorSignature: Buffer.from(await who.sponsor.sign(msg)).toString('base64url') }
+}
+
 function flipByte(b64url, at) {
   const bytes = Buffer.from(b64url, 'base64url')
   bytes[at % bytes.length] ^= 0x01
@@ -327,9 +367,10 @@ test('the harness fails a property that is false', () => {
   assert.throws(() => fc.assert(fc.property(fc.integer(), (n) => n + 1 === n), { numRuns: 10 }))
 })
 
-test('create then verify: any label, type, model and scope verifies under the sponsor key, and under no other', async () => {
+test('create then verify: any label, type, model and scope verifies under the sponsor key, and under no other; a label or model create() cannot sign is refused', async () => {
   await fc.assert(fc.asyncProperty(text, agentType, model, scope, expiresIn, async (label, type, mdl, sc, exp) => {
-    const agent = await KxcoAgentIdentity.create({ sponsor: A.sponsor, label, agentType: type, model: mdl, scope: sc, expiresIn: exp })
+    const agent = await createChecked({ sponsor: A.sponsor, label, agentType: type, model: mdl, scope: sc, expiresIn: exp })
+    if (!agent) return true
     const ok = await KxcoAgentIdentity.verify(agent.credential, { sponsorPublicKey: A.publicKey })
     const other = await KxcoAgentIdentity.verify(agent.credential, { sponsorPublicKey: B.publicKey })
     return ok.valid === true &&
@@ -347,7 +388,8 @@ test('create then verify: any label, type, model and scope verifies under the sp
 test('verify: changing any one signed field of a credential makes it fail', async () => {
   const changes = fc.record({ str: fc.string({ maxLength: 30 }), mdl: text, sc: scope, at: fc.nat() })
   await fc.assert(fc.asyncProperty(text, agentType, model, scope, changes, async (label, type, mdl, sc, c) => {
-    const agent = await KxcoAgentIdentity.create({ sponsor: A.sponsor, label, agentType: type, model: mdl, scope: sc, expiresIn: '30d' })
+    const agent = await createChecked({ sponsor: A.sponsor, label, agentType: type, model: mdl, scope: sc, expiresIn: '30d' })
+    if (!agent) return true
     const original = agent.credential
     const tampered = []
 
@@ -372,6 +414,26 @@ test('verify: changing any one signed field of a credential makes it fail', asyn
       if (r.valid !== false) return false
     }
     return true
+  }), SIGNING)
+})
+
+test('verify: a label signed with a line break in it does not verify, however its text is split between neighbouring fields, and an unpaired surrogate cannot stand in for U+FFFD', async () => {
+  const part = fc.string({ unit: 'grapheme', minLength: 1, maxLength: 12 }).filter((s) => !unsafe(s))
+  await fc.assert(fc.asyncProperty(part, part, agentType, scope, async (head, tail, type, sc) => {
+    const agent = await KxcoAgentIdentity.create({ sponsor: A.sponsor, label: head, agentType: type, scope: sc, expiresIn: '30d' })
+    const earlier = await signedAsBefore({ ...agent.credential, label: `${head}\n${tail}` }, A)
+    const replacement = await KxcoAgentIdentity.create({ sponsor: A.sponsor, label: `${head}\uFFFD`, agentType: type, scope: sc, expiresIn: '30d' })
+    const presented = [
+      earlier,
+      { ...earlier, label: head, model: `${tail}\n` },
+      { ...earlier, agentType: `${type}\n${head}`, label: tail },
+      { ...replacement.credential, label: `${head}\uD800` },
+    ]
+    for (const credential of presented) {
+      const r = await KxcoAgentIdentity.verify(credential, { sponsorPublicKey: A.publicKey })
+      if (r.valid !== false) return false
+    }
+    return (await KxcoAgentIdentity.verify(replacement.credential, { sponsorPublicKey: A.publicKey })).valid === true
   }), SIGNING)
 })
 
@@ -413,7 +475,8 @@ test('verify without a sponsor key: a past expiresAt is refused, one that is not
 
 test('export then import: the restored identity is the same agent and signs as it', async () => {
   await fc.assert(fc.asyncProperty(text, agentType, model, scope, fc.uint8Array({ maxLength: 256 }), async (label, type, mdl, sc, msg) => {
-    const agent = await KxcoAgentIdentity.create({ sponsor: A.sponsor, label, agentType: type, model: mdl, scope: sc, expiresIn: '7d' })
+    const agent = await createChecked({ sponsor: A.sponsor, label, agentType: type, model: mdl, scope: sc, expiresIn: '7d' })
+    if (!agent) return true
     // Through JSON, as it would be stored.
     const loaded = await KxcoAgentIdentity.import(JSON.parse(JSON.stringify(agent.export())))
     const sig = await loaded.sign(msg)

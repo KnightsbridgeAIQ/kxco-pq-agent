@@ -45,6 +45,7 @@ export class AgentChainClient {
 
   constructor({ relay, agent, timeout = 10_000 }) {
     if (!relay) throw new KxcoPqAgentError('relay URL is required', { code: 'BAD_CONFIG' })
+    if (typeof relay !== 'string') throw new KxcoPqAgentError('relay must be a URL string', { code: 'BAD_CONFIG' })
     if (!agent) throw new KxcoPqAgentError('agent is required',     { code: 'BAD_CONFIG' })
     this.#relay          = relay.replace(/\/$/, '')
     this.#agent          = agent
