@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.1.1
+
+checkScope denies an amount, spentToday or limit that is not a finite number,
+and any section, limit or `enabled` switch of the wrong type, naming it.
+validateScope requires positive integer limits, string recipients and boolean
+`enabled` switches. verify() and import() validate the scope they return, and
+verify() treats an expiresAt that is not a date as expired. A scope key named
+`__proto__` is refused.
+
+Credential text fields and relay intent header fields must be one line of
+well-formed text, and AgentChainClient refuses a relay that is not a string.
+The typings now say that an empty purposes list allows no purpose.
+
+**The npm page leads with what the package proves.** The first screen now says
+who answers for an agent, what it may do and how both ends enforce it, the
+evidence underneath and the migration dates set by NIST, Executive Order 14412,
+OMB M-26-15 and the UK NCSC.
+
+A family table maps every KXCO package to the job it does, and a new For
+institutions section sets out the operated services and how to reach us. The
+evidence documents are unchanged and linked from the page.
+
+The scope manifest example uses a complete recipient address, so it validates
+as written, and the page gains Security, Release integrity and License sections.
+
+A NOTICE file names the copyright owner, Knightsbridge Financial Ltd, trading
+as KXCO, and ships in the package, so anyone who redistributes it carries the
+attribution, as section 4(d) of the Apache License requires.
+
 ## 1.1.0
 
 **`checkScope()` enforces the scope locally, before the relay sees the action.**
