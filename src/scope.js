@@ -8,6 +8,14 @@ function validRecipient(s) {
   return EVM_RE.test(s) || KID_RE.test(s)
 }
 
+// An `enabled` switch is either absent or a boolean. Only `false` switches a
+// section off, so any other value would otherwise count as on.
+function checkEnabled(name, section) {
+  if (section && typeof section === 'object' && section.enabled !== undefined && typeof section.enabled !== 'boolean') {
+    throw new KxcoPqAgentError(`scope.${name}.enabled must be a boolean`)
+  }
+}
+
 /**
  * Validate a scope object. Throws KxcoPqAgentError on any violation.
  * Returns the scope unchanged.
@@ -23,17 +31,21 @@ export function validateScope(scope) {
     if (typeof payments !== 'object' || Array.isArray(payments)) {
       throw new KxcoPqAgentError('scope.payments must be an object')
     }
+    checkEnabled('payments', payments)
     if (payments.enabled !== false) {
       const { maxPerTransaction: mpt, maxPerDay: mpd, allowedRecipients: ar } = payments
 
+      // Whole numbers only: create() signs the JCS form of the scope, and the
+      // JCS subset here has no fractions. Number.isInteger also refuses NaN
+      // and Infinity, which no limit comparison can use.
       if (mpt !== undefined) {
-        if (typeof mpt !== 'number' || mpt <= 0) {
-          throw new KxcoPqAgentError('scope.payments.maxPerTransaction must be a positive number')
+        if (!Number.isInteger(mpt) || mpt <= 0) {
+          throw new KxcoPqAgentError('scope.payments.maxPerTransaction must be a positive integer')
         }
       }
       if (mpd !== undefined) {
-        if (typeof mpd !== 'number' || mpd <= 0) {
-          throw new KxcoPqAgentError('scope.payments.maxPerDay must be a positive number')
+        if (!Number.isInteger(mpd) || mpd <= 0) {
+          throw new KxcoPqAgentError('scope.payments.maxPerDay must be a positive integer')
         }
       }
       if (mpt !== undefined && mpd !== undefined && mpt > mpd) {
@@ -44,6 +56,9 @@ export function validateScope(scope) {
           throw new KxcoPqAgentError('scope.payments.allowedRecipients must be an array')
         }
         for (const r of ar) {
+          if (typeof r !== 'string') {
+            throw new KxcoPqAgentError(`each entry in scope.payments.allowedRecipients must be a string, not ${r === null ? 'null' : typeof r}`)
+          }
           if (!validRecipient(r)) {
             throw new KxcoPqAgentError(
               `invalid recipient '${r}' — must be an EVM address (0x + 40 hex) or KXCO kid (16 lowercase hex chars)`
@@ -58,6 +73,7 @@ export function validateScope(scope) {
     if (typeof attestations !== 'object' || Array.isArray(attestations)) {
       throw new KxcoPqAgentError('scope.attestations must be an object')
     }
+    checkEnabled('attestations', attestations)
     if (attestations.enabled !== false && attestations.purposes !== undefined) {
       if (!Array.isArray(attestations.purposes)) {
         throw new KxcoPqAgentError('scope.attestations.purposes must be an array of strings')
@@ -77,6 +93,12 @@ export function validateScope(scope) {
   if (credentials != null && typeof credentials !== 'boolean' && (typeof credentials !== 'object' || Array.isArray(credentials))) {
     throw new KxcoPqAgentError('scope.credentials must be a boolean or object')
   }
+  checkEnabled('auditLog', auditLog)
+  checkEnabled('credentials', credentials)
+
+  // create() signs the JCS form, so a scope that has none (a fraction
+  // anywhere in it, or a key JCS refuses) is refused here, before signing.
+  canonicalize(scope)
 
   return scope
 }
@@ -122,18 +144,40 @@ export function checkScope(scope, action) {
   const granted = (section) =>
     section != null && section !== false && section.enabled !== false
 
+  // A section or limit of the wrong type cannot be judged, so it is denied,
+  // naming it, rather than read loosely. validateScope refuses the same shapes;
+  // these checks cover a scope that never went through it.
+  const sectionFault = (name, section, booleanAllowed) => {
+    if (section == null || section === false) return null
+    if (section === true && booleanAllowed) return null
+    if (typeof section !== 'object' || Array.isArray(section)) {
+      return `scope.${name} must be ${booleanAllowed ? 'a boolean or an object' : 'an object'}`
+    }
+    if (section.enabled !== undefined && typeof section.enabled !== 'boolean') {
+      return `scope.${name}.enabled must be a boolean`
+    }
+    return null
+  }
+  const isLimit = (v) => Number.isFinite(v) && v > 0
+  const isStringList = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string')
+
   switch (action.type) {
     case 'payment': {
       const p = scope.payments
       checked.push('payments.enabled')
+      const fault = sectionFault('payments', p, false)
+      if (fault) return deny(fault)
       if (!granted(p)) return deny('scope does not grant payments')
 
-      if (typeof action.amount !== 'number' || !(action.amount > 0)) {
+      if (!Number.isFinite(action.amount) || !(action.amount > 0)) {
         return deny('payment amount must be a positive number')
       }
 
       if (p.maxPerTransaction !== undefined) {
         checked.push('payments.maxPerTransaction')
+        if (!isLimit(p.maxPerTransaction)) {
+          return deny('payments.maxPerTransaction must be a positive number, so it cannot be evaluated')
+        }
         if (action.amount > p.maxPerTransaction) {
           return deny(
             `amount ${action.amount} exceeds maxPerTransaction ${p.maxPerTransaction}`,
@@ -143,7 +187,10 @@ export function checkScope(scope, action) {
 
       if (p.maxPerDay !== undefined) {
         checked.push('payments.maxPerDay')
-        if (typeof action.spentToday !== 'number' || action.spentToday < 0) {
+        if (!isLimit(p.maxPerDay)) {
+          return deny('payments.maxPerDay must be a positive number, so it cannot be evaluated')
+        }
+        if (!Number.isFinite(action.spentToday) || action.spentToday < 0) {
           return deny(
             'payments.maxPerDay is set, so spentToday is required to evaluate it',
           )
@@ -158,6 +205,9 @@ export function checkScope(scope, action) {
 
       if (p.allowedRecipients !== undefined) {
         checked.push('payments.allowedRecipients')
+        if (!isStringList(p.allowedRecipients)) {
+          return deny('payments.allowedRecipients must be an array of strings, so it cannot be evaluated')
+        }
         if (typeof action.recipient !== 'string') {
           return deny('payments.allowedRecipients is set, so a recipient is required')
         }
@@ -173,10 +223,15 @@ export function checkScope(scope, action) {
     case 'attestation': {
       const a = scope.attestations
       checked.push('attestations.enabled')
+      const fault = sectionFault('attestations', a, false)
+      if (fault) return deny(fault)
       if (!granted(a)) return deny('scope does not grant attestations')
 
       if (a.purposes !== undefined) {
         checked.push('attestations.purposes')
+        if (!isStringList(a.purposes)) {
+          return deny('attestations.purposes must be an array of strings, so it cannot be evaluated')
+        }
         if (typeof action.purpose !== 'string') {
           return deny('attestations.purposes is set, so a purpose is required')
         }
@@ -187,15 +242,21 @@ export function checkScope(scope, action) {
       return allow()
     }
 
-    case 'auditLog':
+    case 'auditLog': {
       checked.push('auditLog')
+      const fault = sectionFault('auditLog', scope.auditLog, true)
+      if (fault) return deny(fault)
       return granted(scope.auditLog) ? allow() : deny('scope does not grant auditLog')
+    }
 
-    case 'credentials':
+    case 'credentials': {
       checked.push('credentials')
+      const fault = sectionFault('credentials', scope.credentials, true)
+      if (fault) return deny(fault)
       return granted(scope.credentials)
         ? allow()
         : deny('scope does not grant credentials')
+    }
 
     default:
       return deny(`unknown action type '${action.type}'`)

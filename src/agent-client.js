@@ -14,15 +14,33 @@ async function sha256Hex(str) {
   return Buffer.from(buf).toString('hex')
 }
 
+// Each header is one line, so a field carrying a line break could pass for the
+// end of one header and the start of the next, and two different intents would
+// sign the same bytes. An unpaired surrogate has no UTF-8 form: TextEncoder
+// writes every one as U+FFFD, so it is refused for the same reason. JSON
+// escapes both inside the payload, so only the header fields need the check.
+const UNSAFE_HEADER = /[\r\n]|\p{Cs}/u
+
+function header(name, value) {
+  const text = `${value}`
+  if (UNSAFE_HEADER.test(text)) {
+    throw new KxcoPqAgentError(
+      `${name} must not contain a line break or an unpaired surrogate`,
+      { code: 'BAD_ARGUMENT' },
+    )
+  }
+  return `${name}: ${text}`
+}
+
 function buildSigningMessage(operation, agentKid, sponsorKid, nonce, timestamp, credentialHash, payload) {
   return enc.encode([
     'kxco-relay-agent-v1',
-    `operation: ${operation}`,
-    `agentKid: ${agentKid}`,
-    `sponsorKid: ${sponsorKid}`,
-    `nonce: ${nonce}`,
-    `timestamp: ${timestamp}`,
-    `credentialHash: ${credentialHash}`,
+    header('operation', operation),
+    header('agentKid', agentKid),
+    header('sponsorKid', sponsorKid),
+    header('nonce', nonce),
+    header('timestamp', timestamp),
+    header('credentialHash', credentialHash),
     `payload: ${canonicalize(payload)}`,
   ].join('\n'))
 }
@@ -45,6 +63,7 @@ export class AgentChainClient {
 
   constructor({ relay, agent, timeout = 10_000 }) {
     if (!relay) throw new KxcoPqAgentError('relay URL is required', { code: 'BAD_CONFIG' })
+    if (typeof relay !== 'string') throw new KxcoPqAgentError('relay must be a URL string', { code: 'BAD_CONFIG' })
     if (!agent) throw new KxcoPqAgentError('agent is required',     { code: 'BAD_CONFIG' })
     this.#relay          = relay.replace(/\/$/, '')
     this.#agent          = agent

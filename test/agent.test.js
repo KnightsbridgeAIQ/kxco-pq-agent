@@ -2,7 +2,7 @@ import { describe, it, test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mlDsa, fingerprint } from 'kxco-post-quantum'
-import { KxcoAgentIdentity, KxcoPqAgentError, checkScope } from '../src/index.js'
+import { KxcoAgentIdentity, AgentChainClient, KxcoPqAgentError, checkScope, validateScope, hashScope } from '../src/index.js'
 import { canonicalize } from '../src/jcs.js'
 
 // ── Mock sponsor ─────────────────────────────────────────────────────────────
@@ -286,6 +286,71 @@ describe('AgentChainClient (toChainClient)', () => {
       }
     )
   })
+
+  it('an intent header field with a line break or an unpaired surrogate is refused before anything is signed or sent', async () => {
+    let requests = 0
+    let captured = null
+    await withMockRelay(
+      (req, res) => {
+        requests++
+        let body = ''
+        req.on('data', c => { body += c })
+        req.on('end', () => {
+          captured = JSON.parse(body)
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, txHash: '0xabc', blockNumber: 1 }))
+        })
+      },
+      async (relayUrl) => {
+        const real = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'hdr', agentType: 'llm', scope: validScope, expiresIn: '1d' })
+        let signed = 0
+        // The members AgentChainClient reads, with one header field replaced.
+        const agentWith = (field, value) => ({
+          kid: real.kid, sponsorKid: real.sponsorKid, credential: real.credential,
+          sign: async (m) => { signed++; return real.sign(m) },
+          [field]: value,
+        })
+        for (const bad of ['a\nb', 'a\rb', 'x\uD800', '\uDC00y']) {
+          for (const field of ['kid', 'sponsorKid']) {
+            const client = new AgentChainClient({ relay: relayUrl, agent: agentWith(field, `${real[field]}${bad}`) })
+            await assert.rejects(
+              () => client.anchorAttestation({ payloadHash: 'a'.repeat(64), purpose: 'trade-confirmation' }),
+              (err) => err instanceof KxcoPqAgentError && err.code === 'BAD_ARGUMENT' && /line break or an unpaired surrogate/.test(err.message),
+              `${field}: ${JSON.stringify(bad)}`,
+            )
+          }
+        }
+        assert.equal(signed, 0)
+        assert.equal(requests, 0)
+
+        // A well-formed intent still goes out, signed over the bytes the relay rebuilds.
+        await new AgentChainClient({ relay: relayUrl, agent: agentWith('kid', real.kid) })
+          .anchorAttestation({ payloadHash: 'a'.repeat(64), purpose: 'trade-confirmation' })
+        assert.equal(requests, 1)
+        const { operation, agentKid, sponsorKid: skid, nonce, timestamp, credentialHash, payload, signature } = captured
+        const msg = new TextEncoder().encode([
+          'kxco-relay-agent-v1',
+          `operation: ${operation}`,
+          `agentKid: ${agentKid}`,
+          `sponsorKid: ${skid}`,
+          `nonce: ${nonce}`,
+          `timestamp: ${timestamp}`,
+          `credentialHash: ${credentialHash}`,
+          `payload: ${canonicalize(payload)}`,
+        ].join('\n'))
+        assert.ok(mlDsa.verify(await real.getPublicKey(), msg, signature))
+      }
+    )
+  })
+
+  it('a relay that is not a string is refused with KxcoPqAgentError BAD_CONFIG', async () => {
+    const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'cfg', agentType: 'llm', scope: validScope, expiresIn: '1d' })
+    const refused = (err) => err instanceof KxcoPqAgentError && err.code === 'BAD_CONFIG'
+    for (const relay of [123, {}, [], true]) {
+      assert.throws(() => agent.toChainClient(relay), refused, JSON.stringify(relay))
+      assert.throws(() => new AgentChainClient({ relay, agent }), refused, JSON.stringify(relay))
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -382,6 +447,209 @@ describe('checkScope', () => {
   test('an empty scope grants nothing', () => {
     for (const type of ['payment', 'attestation', 'auditLog', 'credentials']) {
       assert.equal(checkScope({}, { type, amount: 1 }).allowed, false)
+    }
+  })
+
+  test('a spentToday that is not a finite number is denied, not skipped', () => {
+    const capped = { payments: { maxPerTransaction: 500, maxPerDay: 1000 } }
+    for (const spentToday of [NaN, Infinity, -Infinity]) {
+      const d = checkScope(capped, { type: 'payment', amount: 400, spentToday })
+      assert.equal(d.allowed, false, `spentToday ${spentToday}`)
+      assert.match(d.reason, /spentToday is required/)
+    }
+  })
+
+  test('an amount that is not a finite number is denied', () => {
+    for (const amount of [NaN, Infinity]) {
+      assert.equal(checkScope({ payments: {} }, { type: 'payment', amount }).allowed, false, `amount ${amount}`)
+    }
+  })
+
+  test('a section or limit of the wrong type is denied, naming it', () => {
+    const cases = [
+      [{ payments: { maxPerTransaction: 'abc' } }, { type: 'payment', amount: 1e12 }, 'payments.maxPerTransaction'],
+      [{ payments: { maxPerTransaction: NaN } }, { type: 'payment', amount: 1e12 }, 'payments.maxPerTransaction'],
+      [{ payments: { maxPerDay: '1000' } }, { type: 'payment', amount: 1, spentToday: 0 }, 'payments.maxPerDay'],
+      [{ payments: { maxPerDay: NaN } }, { type: 'payment', amount: 1, spentToday: 0 }, 'payments.maxPerDay'],
+      [{ payments: { allowedRecipients: 'x' } }, { type: 'payment', amount: 1, recipient: 'x' }, 'payments.allowedRecipients'],
+      [{ payments: { allowedRecipients: [42] } }, { type: 'payment', amount: 1, recipient: '42' }, 'payments.allowedRecipients'],
+      [{ attestations: { purposes: 'trade-confirmation' } }, { type: 'attestation', purpose: 'trade' }, 'attestations.purposes'],
+      [{ attestations: { purposes: [7] } }, { type: 'attestation', purpose: '7' }, 'attestations.purposes'],
+      [{ payments: 'abc' }, { type: 'payment', amount: 1 }, 'scope.payments'],
+      [{ attestations: ['audit'] }, { type: 'attestation', purpose: 'audit' }, 'scope.attestations'],
+      [{ auditLog: 'yes' }, { type: 'auditLog' }, 'scope.auditLog'],
+      [{ credentials: 1 }, { type: 'credentials' }, 'scope.credentials'],
+    ]
+    for (const [s, action, name] of cases) {
+      const d = checkScope(s, action)
+      assert.equal(d.allowed, false, JSON.stringify(s))
+      assert.ok(d.reason.includes(`${name} must be`), d.reason)
+    }
+  })
+
+  test('a section whose enabled switch is not a boolean is denied, and true, false and absent read as before', () => {
+    const actions = {
+      payments:     { type: 'payment', amount: 1 },
+      attestations: { type: 'attestation', purpose: 'x' },
+      auditLog:     { type: 'auditLog' },
+      credentials:  { type: 'credentials' },
+    }
+    for (const [section, action] of Object.entries(actions)) {
+      for (const enabled of [0, 1, 'yes', null]) {
+        const d = checkScope({ [section]: { enabled } }, action)
+        assert.equal(d.allowed, false, `${section}.enabled ${JSON.stringify(enabled)}`)
+        assert.ok(d.reason.includes(`scope.${section}.enabled must be a boolean`), d.reason)
+      }
+      assert.equal(checkScope({ [section]: { enabled: true } }, action).allowed, true)
+      assert.equal(checkScope({ [section]: {} }, action).allowed, true)
+      assert.equal(checkScope({ [section]: { enabled: false } }, action).allowed, false)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// validateScope, create, verify, import and hashScope: a scope is held to the
+// same rules wherever it enters, and refused with KxcoPqAgentError
+// ---------------------------------------------------------------------------
+
+const isAgentError = (err) => err instanceof KxcoPqAgentError
+
+// The sponsor-signed message as the relay recomputes it. Used to sign a
+// credential the way an earlier version could, with a line break in a field.
+function signedAsBefore(c, secretKey) {
+  const msg = new TextEncoder().encode([
+    'kxco-agent-credential-v1', c.agentKid, c.agentPublicKey, c.sponsorKid, c.agentType,
+    c.label, c.model ?? '', canonicalize(c.scope), c.issuedAt, c.expiresAt,
+  ].join('\n'))
+  return { ...c, sponsorSignature: Buffer.from(mlDsa.sign(secretKey, msg), 'hex').toString('base64url') }
+}
+
+describe('scope rules at every entry point', () => {
+  test('validateScope refuses a limit that is not a positive integer', () => {
+    for (const bad of [NaN, Infinity, -Infinity, 0, -1, 2.5, '5']) {
+      for (const name of ['maxPerTransaction', 'maxPerDay']) {
+        assert.throws(() => validateScope({ payments: { [name]: bad } }), isAgentError, `${name} ${bad}`)
+      }
+    }
+  })
+
+  test('validateScope refuses a recipient that is not a string', () => {
+    for (const r of [{ toString: 1 }, 42, null, ['0x' + '1'.repeat(40)]]) {
+      assert.throws(() => validateScope({ payments: { allowedRecipients: [r] } }), isAgentError)
+    }
+  })
+
+  test('validateScope refuses an enabled switch that is not a boolean', () => {
+    for (const enabled of [0, 1, '', 'false', null, {}]) {
+      for (const section of ['payments', 'attestations', 'auditLog', 'credentials']) {
+        assert.throws(() => validateScope({ [section]: { enabled } }), isAgentError, `${section}.enabled ${JSON.stringify(enabled)}`)
+      }
+    }
+  })
+
+  test('validateScope refuses a scope JCS cannot sign: a fractional number anywhere, or a "__proto__" key', () => {
+    assert.throws(() => validateScope({ auditLog: { enabled: true, weight: 2.5 } }), isAgentError)
+    assert.throws(() => validateScope(JSON.parse('{"auditLog":true,"__proto__":{"payments":{}}}')), isAgentError)
+  })
+
+  test('create refuses a fractional limit', async () => {
+    await assert.rejects(
+      () => KxcoAgentIdentity.create({
+        sponsor: mockSponsor, label: 'x', agentType: 'llm', expiresIn: '1d',
+        scope: { payments: { maxPerTransaction: 2.5 } },
+      }),
+      isAgentError,
+    )
+  })
+
+  test('create refuses an expiresIn whose expiry is not a representable date', async () => {
+    for (const expiresIn of ['999999999y', NaN, Infinity]) {
+      await assert.rejects(
+        () => KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'x', agentType: 'llm', expiresIn, scope: {} }),
+        isAgentError,
+        String(expiresIn),
+      )
+    }
+  })
+
+  test('hashScope refuses a fractional number and a "__proto__" key', async () => {
+    await assert.rejects(hashScope({ auditLog: true, weight: 2.5 }), isAgentError)
+    await assert.rejects(hashScope(JSON.parse('{"auditLog":true,"__proto__":1}')), isAgentError)
+  })
+
+  test('verify answers valid: false for a scope JCS cannot sign, rather than throwing', async () => {
+    const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'v', agentType: 'llm', scope: validScope, expiresIn: '30d' })
+    const credential = { ...agent.credential, scope: { ...agent.credential.scope, weight: 2.5 } }
+    for (const opts of [{}, { sponsorPublicKey: sponsorKeypair.publicKey }]) {
+      const r = await KxcoAgentIdentity.verify(credential, opts)
+      assert.equal(r.valid, false)
+      assert.equal(typeof r.error, 'string')
+    }
+  })
+
+  test('a credential with a "__proto__" member added to its scope does not verify', async () => {
+    const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'p', agentType: 'llm', scope: { auditLog: true }, expiresIn: '30d' })
+    const text = JSON.stringify(agent.credential)
+      .replace('"scope":{', '"scope":{"__proto__":{"payments":{"maxPerTransaction":1000000}},')
+    const changed = JSON.parse(text)
+    assert.ok(Object.hasOwn(changed.scope, '__proto__'))
+    for (const opts of [{}, { sponsorPublicKey: sponsorKeypair.publicKey }]) {
+      const r = await KxcoAgentIdentity.verify(changed, opts)
+      assert.equal(r.valid, false)
+    }
+  })
+
+  test('verify and import refuse a scope that validateScope refuses', async () => {
+    const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'm', agentType: 'llm', scope: validScope, expiresIn: '30d' })
+    const malformed = { ...validScope, attestations: { purposes: 'trade-confirmation' } }
+    const r = await KxcoAgentIdentity.verify({ ...agent.credential, scope: malformed })
+    assert.equal(r.valid, false)
+    assert.match(r.error, /purposes/)
+    await assert.rejects(() => KxcoAgentIdentity.import({ ...agent.export(), scope: malformed }), isAgentError)
+  })
+
+  test('create refuses a line break or an unpaired surrogate in label, model or the sponsor kid', async () => {
+    for (const bad of ['a\nb', 'a\rb', 'x\uD800', '\uDC00y']) {
+      for (const opts of [{ label: bad }, { model: bad }, { sponsor: { ...mockSponsor, kid: `${mockSponsor.kid}${bad}` } }]) {
+        await assert.rejects(
+          () => KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'x', agentType: 'llm', scope: {}, expiresIn: '1d', ...opts }),
+          (err) => err instanceof KxcoPqAgentError && /line break or an unpaired surrogate/.test(err.message),
+          JSON.stringify(opts),
+        )
+      }
+    }
+  })
+
+  test('verify refuses text moved between neighbouring fields, and an unpaired surrogate standing in for U+FFFD', async () => {
+    const opts = { sponsorPublicKey: sponsorKeypair.publicKey }
+    const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'Settlement', agentType: 'llm', scope: validScope, expiresIn: '30d' })
+    // A credential an earlier version could sign: a line break in its label, and no model.
+    const { model: _none, ...base } = agent.credential
+    const earlier = signedAsBefore({ ...base, label: 'Settlement\nBot' }, sponsorKeypair.secretKey)
+    for (const presented of [
+      earlier,
+      { ...earlier, label: 'Settlement', model: 'Bot\n' },
+      { ...earlier, agentType: 'llm\nSettlement', label: 'Bot' },
+    ]) {
+      const r = await KxcoAgentIdentity.verify(presented, opts)
+      assert.equal(r.valid, false, JSON.stringify([presented.agentType, presented.label, presented.model]))
+      assert.match(r.error, /line break or an unpaired surrogate/)
+    }
+
+    // U+FFFD is a character like any other, and signs; an unpaired surrogate
+    // would encode to the same bytes, so it cannot stand in for it.
+    const replacement = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'bot\uFFFD', agentType: 'llm', scope: validScope, expiresIn: '30d' })
+    assert.equal((await KxcoAgentIdentity.verify(replacement.credential, opts)).valid, true)
+    const r = await KxcoAgentIdentity.verify({ ...replacement.credential, label: 'bot\uD800' }, opts)
+    assert.equal(r.valid, false)
+  })
+
+  test('verify treats an expiresAt that is not a date as expired', async () => {
+    const agent = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'e', agentType: 'llm', scope: validScope, expiresIn: '30d' })
+    for (const expiresAt of ['never', 'not-a-date', '2026-13-45T00:00:00Z']) {
+      const r = await KxcoAgentIdentity.verify({ ...agent.credential, expiresAt })
+      assert.equal(r.valid, false, expiresAt)
+      assert.match(r.error, /expired/)
     }
   })
 })
