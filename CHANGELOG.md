@@ -1,7 +1,6 @@
 # Changelog
 
-## Unreleased
-
+## 1.2.0
 **ML-DSA-87 agents and sponsors.** `KxcoAgentIdentity.create({ alg: 'ML-DSA-87' })`
 gives the agent an ML-DSA-87 key, and `agent.alg` reports the set; ML-DSA-65
 stays the default. The sponsor's set is read from its key (`publicKeyHex` or
