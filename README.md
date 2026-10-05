@@ -127,7 +127,7 @@ between free and paid is set out in
 
 **`KxcoAgentIdentity.create(opts)` → `Promise<KxcoAgentIdentity>`**
 
-Generates an ML-DSA-65 keypair for the agent and has the sponsor sign the credential.
+Generates an ML-DSA-65 keypair for the agent, or an ML-DSA-87 one with `alg: 'ML-DSA-87'`, and has the sponsor sign the credential.
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
@@ -138,10 +138,20 @@ Generates an ML-DSA-65 keypair for the agent and has the sponsor sign the creden
 | `scope` | `object` | Yes | Capability manifest (see above) |
 | `expiresIn` | `string \| number` | Yes | Duration: `'30d'`, `'1y'`, or seconds as a number |
 | `chain` | `KxcoChain` | No | If provided, registers the credential on-chain at issuance |
+| `alg` | `'ML-DSA-65' \| 'ML-DSA-87'` | No | The agent key's parameter set. Defaults to `'ML-DSA-65'` |
+
+The sponsor's parameter set is read from its key: `sponsor.publicKeyHex` (a
+kxco-pq-sdk `KxcoIdentity` has one) or `sponsor.getPublicKey()`, or failing both
+from `sponsor.alg`. A stated `alg` that disagrees with the key is refused, and so
+is a sponsor whose signature is not the set it was read as. An ML-DSA-65 sponsor
+signs the credential exactly as before. An ML-DSA-87 sponsor's credential
+carries `sponsorAlg: 'ML-DSA-87'` and is signed over
+`kxco-agent-credential-v1.1`, which puts the algorithm on the second line,
+inside the signed bytes.
 
 **`agent.toChainClient(relay, opts?)` → `AgentChainClient`**
 
-Returns a relay client that automatically attaches the agent's credential and signature to every request.
+Returns a relay client that automatically attaches the agent's credential and signature to every request. An ML-DSA-65 agent signs `kxco-relay-agent-v1` as before. An ML-DSA-87 agent signs `kxco-relay-agent-v1.1`, the same lines with `alg: ML-DSA-87` after the first, and sends `alg` in the intent.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -150,7 +160,7 @@ Returns a relay client that automatically attaches the agent's credential and si
 
 **`agent.sign(message)` → `Promise<Uint8Array>`**
 
-Signs an arbitrary message with the agent's ML-DSA-65 private key.
+Signs an arbitrary message with the agent's private key, in the set the key belongs to. `agent.alg` reports it.
 
 **`agent.export()` → `object`**
 
@@ -165,7 +175,7 @@ Restores an agent identity from a previously exported object.
 Verifies an agent credential envelope.
 
 - Without `opts.sponsorPublicKey`: checks format and expiry only.
-- With `opts.sponsorPublicKey` (Uint8Array): performs full ML-DSA-65 signature verification.
+- With `opts.sponsorPublicKey` (Uint8Array): performs full ML-DSA signature verification under the set the key belongs to. A credential with no `sponsorAlg` is read as ML-DSA-65, as every credential made before the field reads; one whose `sponsorAlg` names the other set from the key is refused.
 
 **`KxcoAgentIdentity.revoke(agentKid, { chain, reason? })` → `Promise`**
 

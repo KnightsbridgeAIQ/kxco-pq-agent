@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.0
+**ML-DSA-87 agents and sponsors.** `KxcoAgentIdentity.create({ alg: 'ML-DSA-87' })`
+gives the agent an ML-DSA-87 key, and `agent.alg` reports the set; ML-DSA-65
+stays the default. The sponsor's set is read from its key (`publicKeyHex` or
+`getPublicKey()`), or from `sponsor.alg` when it exposes neither; a stated alg
+that disagrees with the key, or a signature of the other set, is refused at
+creation.
+
+**The algorithm travels with the signature.** An ML-DSA-87 sponsor's credential
+carries `sponsorAlg: 'ML-DSA-87'` and is signed over
+`kxco-agent-credential-v1.1`, whose second line is the algorithm. An ML-DSA-87
+agent signs relay intents over `kxco-relay-agent-v1.1`, with `alg: ML-DSA-87`
+after the first line, and sends `alg` in the intent. ML-DSA-65 credentials and
+intents keep exactly the v1 shape and bytes.
+
+**The key decides on verification.** `KxcoAgentIdentity.verify` verifies under the
+sponsor key's set and refuses a credential whose `sponsorAlg` names the other
+set. A credential with no `sponsorAlg` is read as ML-DSA-65, and a test verifies
+an agent exported by 1.1.1.
+
+The `kxco-post-quantum` floor is now ^1.6.0.
+
 ## 1.1.1
 
 checkScope denies an amount, spentToday or limit that is not a finite number,

@@ -1,5 +1,6 @@
 import { KxcoPqAgentError } from './errors.js'
 import { canonicalize }     from './jcs.js'
+import { DEFAULT_ALG }      from './alg.js'
 
 const enc = new TextEncoder()
 
@@ -32,9 +33,13 @@ function header(name, value) {
   return `${name}: ${text}`
 }
 
-function buildSigningMessage(operation, agentKid, sponsorKid, nonce, timestamp, credentialHash, payload) {
+// An ML-DSA-65 agent signs kxco-relay-agent-v1, exactly as before. An ML-DSA-87
+// agent signs kxco-relay-agent-v1.1: the first line replaced and `alg: <set>`
+// after it, the rest unchanged, so the algorithm is inside the signed bytes.
+// This mirrors kxco-relay-v1.1 for institution intents.
+function buildSigningMessage(operation, agentKid, sponsorKid, nonce, timestamp, credentialHash, payload, alg = null) {
   return enc.encode([
-    'kxco-relay-agent-v1',
+    ...(alg === null ? ['kxco-relay-agent-v1'] : ['kxco-relay-agent-v1.1', header('alg', alg)]),
     header('operation', operation),
     header('agentKid', agentKid),
     header('sponsorKid', sponsorKid),
@@ -48,7 +53,8 @@ function buildSigningMessage(operation, agentKid, sponsorKid, nonce, timestamp, 
 /**
  * AgentChainClient — relay client for KxcoAgentIdentity.
  *
- * Sends ML-DSA-65 signed intents to the KXCO relay's /agent-intents endpoint.
+ * Sends ML-DSA signed intents to the KXCO relay's /agent-intents endpoint, in
+ * the agent key's parameter set (ML-DSA-65 by default, or ML-DSA-87).
  * Each request includes the agent's signed credential so the relay can verify
  * the sponsor's authorisation and enforce scope.
  *
@@ -111,7 +117,8 @@ export class AgentChainClient {
     const agentKid       = this.#agent.kid
     const sponsorKid     = this.#agent.sponsorKid
 
-    const msg      = buildSigningMessage(operation, agentKid, sponsorKid, nonce, timestamp, credentialHash, payload)
+    const alg      = this.#agent.alg === undefined || this.#agent.alg === DEFAULT_ALG ? null : this.#agent.alg
+    const msg      = buildSigningMessage(operation, agentKid, sponsorKid, nonce, timestamp, credentialHash, payload, alg)
     const sigBytes = await this.#agent.sign(msg)
     const signature = Buffer.from(sigBytes).toString('hex')
 
@@ -125,6 +132,8 @@ export class AgentChainClient {
       timestamp,
       payload,
       signature,
+      // Only on a v1.1 intent; an ML-DSA-65 intent keeps exactly its fields.
+      ...(alg !== null && { alg }),
     }
 
     const ac  = new AbortController()

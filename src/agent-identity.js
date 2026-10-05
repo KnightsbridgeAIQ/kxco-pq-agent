@@ -1,8 +1,9 @@
-import { mlDsa, fingerprint } from 'kxco-post-quantum'
+import { fingerprint } from 'kxco-post-quantum'
 import { validateScope, hashScope } from './scope.js'
 import { canonicalize }             from './jcs.js'
 import { KxcoPqAgentError }         from './errors.js'
 import { AgentChainClient }         from './agent-client.js'
+import { SETS, DEFAULT_ALG, algForPublicKey, algForSecretKey, statedAlg } from './alg.js'
 
 const CREDENTIAL_VERSION = '1'
 const IDENTITY_VERSION   = '1'
@@ -26,9 +27,12 @@ function parseDuration(val) {
   return n * ms[m[2]]
 }
 
-function credentialSigningMsg({ agentKid, agentPublicKey, sponsorKid, agentType, label, model, scope, issuedAt, expiresAt }) {
+// An ML-DSA-65 sponsor signs the v1 message, exactly as before. An ML-DSA-87
+// sponsor signs v1.1, whose first line differs and whose second line is the
+// sponsor's algorithm, so the algorithm is inside the signed bytes.
+function credentialSigningMsg({ agentKid, agentPublicKey, sponsorKid, agentType, label, model, scope, issuedAt, expiresAt, sponsorAlg = null }) {
   return enc.encode([
-    'kxco-agent-credential-v1',
+    ...(sponsorAlg === null ? ['kxco-agent-credential-v1'] : ['kxco-agent-credential-v1.1', sponsorAlg]),
     agentKid,
     agentPublicKey,
     sponsorKid,
@@ -62,6 +66,24 @@ function fieldFault(fields) {
 }
 
 const VALID_AGENT_TYPES = new Set(['llm', 'robot', 'iot', 'process'])
+
+// The sponsor's parameter set. Its key decides where the sponsor exposes one
+// (publicKeyHex, as a kxco-pq-sdk KxcoIdentity does, or getPublicKey()); a
+// stated `alg` is for a sponsor that exposes neither, and one that disagrees
+// with the key is refused.
+async function sponsorAlgOf(sponsor) {
+  if (sponsor.alg !== undefined && !Object.hasOwn(SETS, sponsor.alg)) {
+    throw new KxcoPqAgentError(`create: sponsor.alg must be 'ML-DSA-65' or 'ML-DSA-87', got ${JSON.stringify(sponsor.alg)}`)
+  }
+  let key = null
+  if (typeof sponsor.publicKeyHex === 'string') key = Buffer.from(sponsor.publicKeyHex, 'hex')
+  else if (typeof sponsor.getPublicKey === 'function') key = await sponsor.getPublicKey()
+  const keyAlg = key ? algForPublicKey(key) : null
+  if (sponsor.alg !== undefined && keyAlg !== null && sponsor.alg !== keyAlg) {
+    throw new KxcoPqAgentError(`create: sponsor.alg is ${sponsor.alg} but the sponsor's public key is ${keyAlg}`)
+  }
+  return keyAlg ?? sponsor.alg ?? DEFAULT_ALG
+}
 
 export class KxcoAgentIdentity {
   #kid
@@ -98,6 +120,9 @@ export class KxcoAgentIdentity {
   get expiresAt()  { return this.#expiresAt }
   get credential() { return JSON.parse(JSON.stringify(this.#credential)) }
 
+  /** This agent's ML-DSA parameter set, 'ML-DSA-65' or 'ML-DSA-87', read from its key. */
+  get alg() { return algForPublicKey(this.#keypair?.publicKey) ?? DEFAULT_ALG }
+
   // ── Factory ───────────────────────────────────────────────────────────────
 
   /**
@@ -111,8 +136,9 @@ export class KxcoAgentIdentity {
    * @param {object} opts.scope       — locked capability manifest (see scope.js)
    * @param {string|number} opts.expiresIn — '30d', '1y', or seconds as number (mandatory)
    * @param {object} [opts.chain]     — KxcoChain instance for on-chain registration
+   * @param {'ML-DSA-65'|'ML-DSA-87'} [opts.alg] the agent key's parameter set; default ML-DSA-65
    */
-  static async create({ sponsor, label, agentType, model, scope, expiresIn, chain } = {}) {
+  static async create({ sponsor, label, agentType, model, scope, expiresIn, chain, alg } = {}) {
     if (!sponsor?.kid || typeof sponsor.sign !== 'function') {
       throw new KxcoPqAgentError('create: sponsor must have .kid and .sign(message)')
     }
@@ -129,7 +155,14 @@ export class KxcoAgentIdentity {
 
     validateScope(scope)
 
-    const keypair      = mlDsa.ml_dsa65.keygen()
+    if (alg !== undefined && !Object.hasOwn(SETS, alg)) {
+      throw new KxcoPqAgentError(`create: alg must be 'ML-DSA-65' or 'ML-DSA-87', got ${JSON.stringify(alg)}`)
+    }
+    const sponsorAlg = await sponsorAlgOf(sponsor)
+
+    // Random keygen has no wrapper equivalent; the raw keygen is reached
+    // through the wrapper's own re-export, as ML-DSA-65 always has been.
+    const keypair      = SETS[alg ?? DEFAULT_ALG].keygen()
     const agentKid     = fingerprint(keypair.publicKey)
     const agentPubB64  = b64url(keypair.publicKey)
     const issuedAt     = new Date().toISOString()
@@ -149,9 +182,17 @@ export class KxcoAgentIdentity {
       scope,
       issuedAt,
       expiresAt,
+      sponsorAlg: sponsorAlg === DEFAULT_ALG ? null : sponsorAlg,
     })
 
     const sigBytes   = await sponsor.sign(sigMsg)
+    // A sponsor that signed with a key of another set from the one it was
+    // read as would produce a credential nothing can verify. Refused here.
+    if (sigBytes?.length !== SETS[sponsorAlg].signatureBytes) {
+      throw new KxcoPqAgentError(
+        `create: the sponsor's signature is not ${sponsorAlg}; give the sponsor publicKeyHex, getPublicKey() or alg`,
+      )
+    }
     const credential = {
       'kxco-agent':     CREDENTIAL_VERSION,
       agentKid,
@@ -163,6 +204,9 @@ export class KxcoAgentIdentity {
       scope,
       issuedAt,
       expiresAt,
+      // Recorded only for an ML-DSA-87 sponsor, so an ML-DSA-65 credential
+      // keeps exactly the v1 shape.
+      ...(sponsorAlg !== DEFAULT_ALG && { sponsorAlg }),
       sponsorSignature: b64url(sigBytes),
     }
 
@@ -198,7 +242,10 @@ export class KxcoAgentIdentity {
     if (!this.#keypair?.secretKey) {
       throw new KxcoPqAgentError('no signing key — reconstruct with KxcoAgentIdentity.import()')
     }
-    return Buffer.from(mlDsa.sign(
+    // The secret key decides which set signs.
+    const alg = algForSecretKey(this.#keypair.secretKey)
+    if (alg === null) throw new KxcoPqAgentError('the secret key is neither ML-DSA-65 nor ML-DSA-87')
+    return Buffer.from(SETS[alg].module.sign(
       new Uint8Array(this.#keypair.secretKey),
       new Uint8Array(message),
     ), 'hex')
@@ -264,8 +311,12 @@ export class KxcoAgentIdentity {
 
   /**
    * Verify an agent credential envelope.
-   * Pass sponsorPublicKey (Uint8Array) to perform full ML-DSA-65 signature verification.
+   * Pass sponsorPublicKey (Uint8Array) to perform full ML-DSA signature verification.
    * Without it, only expiry and format are checked.
+   *
+   * The sponsor key decides the algorithm. A credential with no `sponsorAlg`
+   * is v1 and means ML-DSA-65; one stating the other set from the key is
+   * refused rather than tried.
    *
    * @param {object} credential
    * @param {{ sponsorPublicKey?: Uint8Array }} [opts]
@@ -306,10 +357,19 @@ export class KxcoAgentIdentity {
     }
 
     if (sponsorPublicKey) {
-      const msg = credentialSigningMsg({ agentKid, agentPublicKey, sponsorKid, agentType, label, model, scope, issuedAt, expiresAt })
+      const stated = statedAlg(credential.sponsorAlg)
+      const alg    = stated ?? DEFAULT_ALG
+      const keyAlg = algForPublicKey(sponsorPublicKey)
+      if (keyAlg !== null && keyAlg !== alg) {
+        return { valid: false, error: 'sponsor algorithm does not match key' }
+      }
+      const msg = credentialSigningMsg({
+        agentKid, agentPublicKey, sponsorKid, agentType, label, model, scope, issuedAt, expiresAt, sponsorAlg: stated,
+      })
       let ok
       try {
-        ok = mlDsa.verify(new Uint8Array(sponsorPublicKey), msg, Buffer.from(fromB64url(sponsorSignature)).toString('hex'))
+        ok = keyAlg !== null &&
+          SETS[alg].module.verify(new Uint8Array(sponsorPublicKey), msg, Buffer.from(fromB64url(sponsorSignature)).toString('hex'))
       } catch {
         ok = false
       }
