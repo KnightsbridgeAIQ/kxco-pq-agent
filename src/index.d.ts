@@ -67,10 +67,13 @@ export function checkScope(scope: AgentScope, action: ScopeAction): ScopeDecisio
 
 // ── Credential envelope ───────────────────────────────────────────────────────
 
+/** The ML-DSA parameter sets an agent or sponsor key can be. ML-DSA-65 is the default. */
+export type AgentAlgorithm = 'ML-DSA-65' | 'ML-DSA-87'
+
 export interface AgentCredential {
   'kxco-agent':     string
   agentKid:         string
-  agentPublicKey:   string   // base64url ML-DSA-65 public key
+  agentPublicKey:   string   // base64url ML-DSA-65 or ML-DSA-87 public key
   sponsorKid:       string
   agentType:        'llm' | 'robot' | 'iot' | 'process'
   label:            string
@@ -78,7 +81,12 @@ export interface AgentCredential {
   scope:            AgentScope
   issuedAt:         string   // ISO 8601
   expiresAt:        string   // ISO 8601
-  sponsorSignature: string   // base64url ML-DSA-65 sig by sponsor
+  /**
+   * The sponsor's signature algorithm, inside the signed bytes. Present when an
+   * ML-DSA-87 sponsor signed; absent means ML-DSA-65.
+   */
+  sponsorAlg?:      AgentAlgorithm
+  sponsorSignature: string   // base64url ML-DSA sig by sponsor, in the set sponsorAlg names
 }
 
 export interface VerifyResult {
@@ -113,6 +121,12 @@ export class AgentChainClient {
 export interface Sponsor {
   kid:  string
   sign(message: Uint8Array): Promise<Uint8Array>
+  /** The sponsor's public key as hex. Decides the sponsor's parameter set. */
+  publicKeyHex?: string | null
+  /** The sponsor's public key. Read when publicKeyHex is absent. */
+  getPublicKey?(): Promise<Uint8Array>
+  /** For a sponsor that exposes no public key. Refused if it disagrees with the key. */
+  alg?: AgentAlgorithm
 }
 
 export interface CreateAgentOptions {
@@ -125,6 +139,8 @@ export interface CreateAgentOptions {
   expiresIn:  string | number
   /** KxcoChain instance (from kxco-pq-chain) for on-chain registration. */
   chain?:     { issueAgentCredential(opts: object): Promise<AgentRelayResult> }
+  /** The agent key's parameter set. Defaults to 'ML-DSA-65'. */
+  alg?:       AgentAlgorithm
 }
 
 export interface ExportedAgentIdentity {
@@ -152,6 +168,8 @@ export class KxcoAgentIdentity {
   readonly issuedAt:   string
   readonly expiresAt:  string
   readonly credential: AgentCredential
+  /** This agent's parameter set, read from its key. */
+  readonly alg:        AgentAlgorithm
 
   static create(opts: CreateAgentOptions): Promise<KxcoAgentIdentity>
   static import(exported: ExportedAgentIdentity): Promise<KxcoAgentIdentity>
