@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1
+
+Documentation. No source change.
+
+The package description, the opening of the README and the keywords now say
+what 1.2.0 already does: an agent's key, and its sponsor's, can each be
+ML-DSA-87 as well as ML-DSA-65. `ml-dsa-87` joins the keywords.
+
 ## 1.2.0
 **ML-DSA-87 agents and sponsors.** `KxcoAgentIdentity.create({ alg: 'ML-DSA-87' })`
 gives the agent an ML-DSA-87 key, and `agent.alg` reports the set; ML-DSA-65

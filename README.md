@@ -1,6 +1,6 @@
 # kxco-pq-agent
 
-**Post-quantum identity for AI agents: an ML-DSA-65 key, a locked scope and the signature of the KYC-verified institution that answers for the agent.**
+**Post-quantum identity for AI agents: an ML-DSA-87 or ML-DSA-65 key, a locked scope and the signature of the KYC-verified institution that answers for the agent.**
 
 [![npm](https://img.shields.io/npm/v/kxco-pq-agent?label=npm&color=b0964f)](https://www.npmjs.com/package/kxco-pq-agent)
 [![downloads](https://img.shields.io/npm/dm/kxco-pq-agent?label=downloads&color=b0964f)](https://www.npmjs.com/package/kxco-pq-agent)
@@ -10,12 +10,12 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![node](https://img.shields.io/node/v/kxco-pq-agent.svg)](https://nodejs.org)
 
-AI systems cannot pass KYC. An LLM, robot, IoT device, or daemon has no legal standing to authenticate itself to a regulated network. This package solves that with a delegation model: a KYC-verified institution sponsors the agent by signing its ML-DSA-65 public key alongside a locked capability scope. The agent then signs its own relay operations independently, presenting the sponsor's credential as proof of authority. The KXCO relay validates both signatures before accepting any intent, so the institution's approval is cryptographically bound to every action the agent takes.
+AI systems cannot pass KYC. An LLM, robot, IoT device, or daemon has no legal standing to authenticate itself to a regulated network. This package solves that with a delegation model: a KYC-verified institution sponsors the agent by signing its ML-DSA-87 or ML-DSA-65 public key alongside a locked capability scope. The agent then signs its own relay operations independently, presenting the sponsor's credential as proof of authority. The KXCO relay validates both signatures before accepting any intent, so the institution's approval is cryptographically bound to every action the agent takes.
 
-- **Every agent answers to a named institution.** A KYC-verified sponsor signs the agent's ML-DSA-65 key and scope at issuance, and can record the key and a hash of the scope on Armature L1 through `kxco-pq-chain`, so the question of who authorised an action has a legal entity for an answer.
+- **Every agent answers to a named institution.** A KYC-verified sponsor signs the agent's ML-DSA-87 or ML-DSA-65 key and scope at issuance, and can record the key and a hash of the scope on Armature L1 through `kxco-pq-chain`, so the question of who authorised an action has a legal entity for an answer.
 - **Authority fixed at issuance.** The sponsor signs the capability scope into the credential, so the agent cannot widen it: new permissions mean the sponsor revokes and re-issues.
 - **Enforced at both ends.** The relay checks the signed scope behind the agent, and `checkScope()` checks it in front: offline, with no round trip, naming the limit that stopped it, and failing closed.
-- **Every action signed and bound.** Each relay intent carries the agent's own ML-DSA-65 signature over the operation and its payload, a fresh nonce, a timestamp and the hash of the sponsor's credential.
+- **Every action signed and bound.** Each relay intent carries the agent's own ML-DSA-87 or ML-DSA-65 signature over the operation and its payload, a fresh nonce, a timestamp and the hash of the sponsor's credential.
 - **Any autonomous system, always with an end date.** LLMs, robots, IoT devices and daemons each get a typed identity, and expiry is mandatory, so a short-lived task never leaves a long-lived key behind.
 - **Proven underneath.** 1,793 NIST ACVP vectors passed, 0 failed, and 225 interoperability checks against liboqs, Bouncy Castle and the Python reference implementations, 0 failed, in [`kxco-post-quantum`](https://github.com/KnightsbridgeAIQ/kxco-post-quantum/blob/main/CONFORMANCE.md).
 - **A supply chain you can check.** SLSA provenance and a CycloneDX SBOM on every release since 1.0.7, third-party dependencies pinned to exact versions, and every GitHub Action pinned by commit SHA.
@@ -304,7 +304,7 @@ above it.
 
 ## Security
 
-Agents sign with **ML-DSA-65** (NIST FIPS 204) via [`kxco-post-quantum`](https://www.npmjs.com/package/kxco-post-quantum), running on the OpenSSL 3.5 primitives where the runtime provides them. No custom cryptography.
+Agents sign with **ML-DSA-87** or **ML-DSA-65** (NIST FIPS 204) via [`kxco-post-quantum`](https://www.npmjs.com/package/kxco-post-quantum), running on the OpenSSL 3.5 primitives where the runtime provides them. No custom cryptography.
 
 Evidenced, and reproducible on your own machine:
 
