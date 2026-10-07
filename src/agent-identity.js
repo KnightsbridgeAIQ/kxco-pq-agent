@@ -3,7 +3,7 @@ import { validateScope, hashScope } from './scope.js'
 import { canonicalize }             from './jcs.js'
 import { KxcoPqAgentError }         from './errors.js'
 import { AgentChainClient }         from './agent-client.js'
-import { SETS, DEFAULT_ALG, algForPublicKey, algForSecretKey, statedAlg } from './alg.js'
+import { SETS, DEFAULT_ALG, V1_ALG, algForPublicKey, algForSecretKey, statedAlg } from './alg.js'
 
 const CREDENTIAL_VERSION = '1'
 const IDENTITY_VERSION   = '1'
@@ -70,7 +70,9 @@ const VALID_AGENT_TYPES = new Set(['llm', 'robot', 'iot', 'process'])
 // The sponsor's parameter set. Its key decides where the sponsor exposes one
 // (publicKeyHex, as a kxco-pq-sdk KxcoIdentity does, or getPublicKey()); a
 // stated `alg` is for a sponsor that exposes neither, and one that disagrees
-// with the key is refused.
+// with the key is refused. A sponsor that exposes nothing is an existing key
+// read as v1, ML-DSA-65; the signature-length check in create() refuses it if
+// it is not.
 async function sponsorAlgOf(sponsor) {
   if (sponsor.alg !== undefined && !Object.hasOwn(SETS, sponsor.alg)) {
     throw new KxcoPqAgentError(`create: sponsor.alg must be 'ML-DSA-65' or 'ML-DSA-87', got ${JSON.stringify(sponsor.alg)}`)
@@ -82,7 +84,7 @@ async function sponsorAlgOf(sponsor) {
   if (sponsor.alg !== undefined && keyAlg !== null && sponsor.alg !== keyAlg) {
     throw new KxcoPqAgentError(`create: sponsor.alg is ${sponsor.alg} but the sponsor's public key is ${keyAlg}`)
   }
-  return keyAlg ?? sponsor.alg ?? DEFAULT_ALG
+  return keyAlg ?? sponsor.alg ?? V1_ALG
 }
 
 export class KxcoAgentIdentity {
@@ -121,7 +123,7 @@ export class KxcoAgentIdentity {
   get credential() { return JSON.parse(JSON.stringify(this.#credential)) }
 
   /** This agent's ML-DSA parameter set, 'ML-DSA-65' or 'ML-DSA-87', read from its key. */
-  get alg() { return algForPublicKey(this.#keypair?.publicKey) ?? DEFAULT_ALG }
+  get alg() { return algForPublicKey(this.#keypair?.publicKey) ?? V1_ALG }
 
   // ── Factory ───────────────────────────────────────────────────────────────
 
@@ -136,7 +138,7 @@ export class KxcoAgentIdentity {
    * @param {object} opts.scope       — locked capability manifest (see scope.js)
    * @param {string|number} opts.expiresIn — '30d', '1y', or seconds as number (mandatory)
    * @param {object} [opts.chain]     — KxcoChain instance for on-chain registration
-   * @param {'ML-DSA-65'|'ML-DSA-87'} [opts.alg] the agent key's parameter set; default ML-DSA-65
+   * @param {'ML-DSA-87'|'ML-DSA-65'} [opts.alg] the agent key's parameter set; default ML-DSA-87
    */
   static async create({ sponsor, label, agentType, model, scope, expiresIn, chain, alg } = {}) {
     if (!sponsor?.kid || typeof sponsor.sign !== 'function') {
@@ -182,7 +184,7 @@ export class KxcoAgentIdentity {
       scope,
       issuedAt,
       expiresAt,
-      sponsorAlg: sponsorAlg === DEFAULT_ALG ? null : sponsorAlg,
+      sponsorAlg: sponsorAlg === V1_ALG ? null : sponsorAlg,
     })
 
     const sigBytes   = await sponsor.sign(sigMsg)
@@ -206,7 +208,7 @@ export class KxcoAgentIdentity {
       expiresAt,
       // Recorded only for an ML-DSA-87 sponsor, so an ML-DSA-65 credential
       // keeps exactly the v1 shape.
-      ...(sponsorAlg !== DEFAULT_ALG && { sponsorAlg }),
+      ...(sponsorAlg !== V1_ALG && { sponsorAlg }),
       sponsorSignature: b64url(sigBytes),
     }
 
@@ -358,7 +360,7 @@ export class KxcoAgentIdentity {
 
     if (sponsorPublicKey) {
       const stated = statedAlg(credential.sponsorAlg)
-      const alg    = stated ?? DEFAULT_ALG
+      const alg    = stated ?? V1_ALG
       const keyAlg = algForPublicKey(sponsorPublicKey)
       if (keyAlg !== null && keyAlg !== alg) {
         return { valid: false, error: 'sponsor algorithm does not match key' }

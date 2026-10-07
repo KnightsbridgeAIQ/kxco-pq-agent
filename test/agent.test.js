@@ -1,7 +1,7 @@
 import { describe, it, test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mlDsa, fingerprint } from 'kxco-post-quantum'
+import { mlDsa, mlDsa87, fingerprint } from 'kxco-post-quantum'
 import { KxcoAgentIdentity, AgentChainClient, KxcoPqAgentError, checkScope, validateScope, hashScope } from '../src/index.js'
 import { canonicalize } from '../src/jcs.js'
 
@@ -109,7 +109,8 @@ describe('KxcoAgentIdentity sign', () => {
     const message = new TextEncoder().encode('test payload')
     const sig     = await agent.sign(message)
     const pubKey  = await agent.getPublicKey()
-    assert.ok(mlDsa.verify(pubKey, message, Buffer.from(sig).toString('hex')))
+    // A new agent is ML-DSA-87 by default.
+    assert.ok(mlDsa87.verify(pubKey, message, Buffer.from(sig).toString('hex')))
   })
 
   it('agent signature does not verify with sponsor key', async () => {
@@ -138,7 +139,8 @@ describe('KxcoAgentIdentity export/import', () => {
     const msg = new TextEncoder().encode('round-trip test')
     const sig = await loaded.sign(msg)
     const pub = await loaded.getPublicKey()
-    assert.ok(mlDsa.verify(pub, msg, Buffer.from(sig).toString('hex')))
+    assert.equal(loaded.alg, 'ML-DSA-87')
+    assert.ok(mlDsa87.verify(pub, msg, Buffer.from(sig).toString('hex')))
   })
 
   it('throws for unsupported import format', async () => {
@@ -246,10 +248,14 @@ describe('AgentChainClient (toChainClient)', () => {
         const chain = agent.toChainClient(relayUrl)
         await chain.transfer({ to: '0xAbCdEf1234567890AbCdEf1234567890AbCdEf12', amount: 100 })
 
+        // A default agent is ML-DSA-87, so it signs kxco-relay-agent-v1.1
+        // with the algorithm on the second line and in the intent.
         const { operation, agentKid, sponsorKid: skid, nonce, timestamp, credentialHash, payload, signature } = captured
+        assert.equal(captured.alg, 'ML-DSA-87')
         const enc = new TextEncoder()
         const msg = enc.encode([
-          'kxco-relay-agent-v1',
+          'kxco-relay-agent-v1.1',
+          'alg: ML-DSA-87',
           `operation: ${operation}`,
           `agentKid: ${agentKid}`,
           `sponsorKid: ${skid}`,
@@ -260,7 +266,7 @@ describe('AgentChainClient (toChainClient)', () => {
         ].join('\n'))
 
         const agentPubKey = await agent.getPublicKey()
-        assert.ok(mlDsa.verify(agentPubKey, msg, signature), 'intent must be signed by agent key')
+        assert.ok(mlDsa87.verify(agentPubKey, msg, signature), 'intent must be signed by agent key')
         assert.equal(mlDsa.verify(sponsorKeypair.publicKey, msg, signature), false, 'sponsor key must not verify agent intent')
       }
     )
@@ -302,7 +308,9 @@ describe('AgentChainClient (toChainClient)', () => {
         })
       },
       async (relayUrl) => {
-        const real = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'hdr', agentType: 'llm', scope: validScope, expiresIn: '1d' })
+        // ML-DSA-65 named, because the stand-in agent below carries no alg and
+        // so signs the v1 bytes this test rebuilds.
+        const real = await KxcoAgentIdentity.create({ sponsor: mockSponsor, label: 'hdr', agentType: 'llm', scope: validScope, expiresIn: '1d', alg: 'ML-DSA-65' })
         let signed = 0
         // The members AgentChainClient reads, with one header field replaced.
         const agentWith = (field, value) => ({

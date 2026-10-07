@@ -10,8 +10,9 @@ and publishes the lot. Cited here, proven there.
 
 ## What this package is
 
-Identity for a non-human actor. A KYC-verified institution sponsors an ML-DSA-65
-keypair for an agent and binds a capability scope to it at issuance.
+Identity for a non-human actor. A KYC-verified institution sponsors an ML-DSA-87
+keypair for an agent, or an ML-DSA-65 one on request, and binds a capability
+scope to it at issuance.
 
 The question a supervisor asks about an autonomous system is not "was it
 encrypted" but "who authorised this, and what were they allowed to do". This
@@ -94,9 +95,9 @@ from `npm run evidence` recording identity, the test run, the SBOM and the
 
 **Supported versions.** One line moving forward. Fixes land in the next release.
 
-**Cost.** No hardware or runtime ceiling. Signing is one ML-DSA-65 operation per
-action; the practical limits are the scope caps themselves, which are policy
-rather than performance.
+**Cost.** No hardware or runtime ceiling. Signing is one ML-DSA operation per
+action, ML-DSA-87 by default. The practical limits are the scope caps
+themselves, which are policy rather than performance.
 
 **Connection.** `relay.kxco.ai`, which negotiates the hybrid key exchange group
 `X25519MLKEM768` under TLS 1.3. Measured 7 September 2026 with OpenSSL 3.5.6,
@@ -107,8 +108,9 @@ echo | openssl s_client -connect relay.kxco.ai:443 -servername relay.kxco.ai \
   -groups X25519MLKEM768 -tls1_3 2>&1 | grep "Negotiated TLS1.3 group"
 ```
 
-The intent is signed with ML-DSA-65 before it is sent and verified on chain
-after it arrives, so the transport carries the intent rather than securing it.
+The intent is signed with the agent's key, ML-DSA-87 by default, before it is
+sent and verified on chain after it arrives, so the transport carries the intent
+rather than securing it.
 
 ## Correcting this document
 

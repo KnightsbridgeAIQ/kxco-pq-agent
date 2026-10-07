@@ -1,6 +1,7 @@
-// ML-DSA-87 agents and sponsors: each key decides its own set, an ML-DSA-87
-// signature carries its algorithm inside the signed bytes, the other set's key
-// is refused, and ML-DSA-65 credentials and intents are exactly as before.
+// ML-DSA-87 agents and sponsors: a new agent is ML-DSA-87 unless ML-DSA-65 is
+// asked for, each key decides its own set, an ML-DSA-87 signature carries its
+// algorithm inside the signed bytes, the other set's key is refused, and
+// ML-DSA-65 credentials and intents are exactly as before.
 
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
@@ -38,9 +39,40 @@ test("create({ alg: 'ML-DSA-87' }): an ML-DSA-87 agent key that signs and verifi
   assert.equal((await KxcoAgentIdentity.verify(agent.credential, { sponsorPublicKey: s65.publicKey })).valid, true)
 })
 
-test('create: ML-DSA-65 stays the default and an unknown alg is refused', async () => {
-  assert.equal((await KxcoAgentIdentity.create({ ...base, sponsor: sponsorOf(s65, mlDsa) })).alg, 'ML-DSA-65')
+test('create: ML-DSA-87 is the default, sized as FIPS 204 sets it, and an unknown alg is refused', async () => {
+  const agent = await KxcoAgentIdentity.create({ ...base, sponsor: sponsorOf(s65, mlDsa) })
+  assert.equal(agent.alg, 'ML-DSA-87')
+  const pk = await agent.getPublicKey()
+  assert.equal(pk.length, 2592)
+  assert.equal(Buffer.from(agent.export().secretKey, 'base64url').length, 4896)
+  const sig = await agent.sign(new TextEncoder().encode('default'))
+  assert.equal(sig.length, 4627)
+  assert.equal(mlDsa87.verify(pk, 'default', Buffer.from(sig).toString('hex')), true)
+  assert.equal(mlDsa.verify(pk, 'default', Buffer.from(sig).toString('hex')), false)
+  // The sponsor's set is its own: an ML-DSA-65 sponsor still issues the v1 credential.
+  assert.equal(Object.hasOwn(agent.credential, 'sponsorAlg'), false)
+  assert.equal((await KxcoAgentIdentity.verify(agent.credential, { sponsorPublicKey: s65.publicKey })).valid, true)
   await assert.rejects(KxcoAgentIdentity.create({ ...base, sponsor: sponsorOf(s65, mlDsa), alg: 'ML-DSA-44' }), KxcoPqAgentError)
+})
+
+test("create({ alg: 'ML-DSA-65' }): the old default on request, sized and signed as ML-DSA-65", async () => {
+  const agent = await KxcoAgentIdentity.create({ ...base, sponsor: sponsorOf(s65, mlDsa), alg: 'ML-DSA-65' })
+  assert.equal(agent.alg, 'ML-DSA-65')
+  const pk = await agent.getPublicKey()
+  assert.equal(pk.length, 1952)
+  const sig = await agent.sign(new TextEncoder().encode('chosen'))
+  assert.equal(sig.length, 3309)
+  assert.equal(mlDsa.verify(pk, 'chosen', Buffer.from(sig).toString('hex')), true)
+  const again = await KxcoAgentIdentity.import(JSON.parse(JSON.stringify(agent.export())))
+  assert.equal(again.alg, 'ML-DSA-65')
+})
+
+test('an ML-DSA-65 sponsor that exposes no key or alg is read as ML-DSA-65, as before', async () => {
+  const agent = await KxcoAgentIdentity.create({ ...base, sponsor: sponsorOf(s65, mlDsa) })
+  assert.equal(agent.alg, 'ML-DSA-87')
+  assert.equal(Object.hasOwn(agent.credential, 'sponsorAlg'), false)
+  assert.equal(Buffer.from(agent.credential.sponsorSignature, 'base64url').length, 3309)
+  assert.equal((await KxcoAgentIdentity.verify(agent.credential, { sponsorPublicKey: s65.publicKey })).valid, true)
 })
 
 test('an ML-DSA-87 sponsor records sponsorAlg, and only its own key verifies the credential', async () => {
@@ -124,8 +156,16 @@ test('intents: an ML-DSA-87 agent signs kxco-relay-agent-v1.1 with alg in the in
   assert.equal(mlDsa87.verify(pk, relayMessage(intent, null), intent.signature), false, 'not the v1 bytes')
 })
 
-test('intents: an ML-DSA-65 agent still signs kxco-relay-agent-v1 with no alg field', async () => {
+test('intents: a default agent signs kxco-relay-agent-v1.1 as ML-DSA-87', async () => {
   const agent = await KxcoAgentIdentity.create({ ...base, sponsor: sponsorOf(s65, mlDsa) })
+  const intent = await captureIntent(agent)
+  assert.equal(intent.alg, 'ML-DSA-87')
+  assert.equal(Buffer.from(intent.signature, 'hex').length, 4627)
+  assert.equal(mlDsa87.verify(await agent.getPublicKey(), relayMessage(intent, 'ML-DSA-87'), intent.signature), true)
+})
+
+test('intents: an ML-DSA-65 agent still signs kxco-relay-agent-v1 with no alg field', async () => {
+  const agent = await KxcoAgentIdentity.create({ ...base, sponsor: sponsorOf(s65, mlDsa), alg: 'ML-DSA-65' })
   const intent = await captureIntent(agent)
   assert.equal(Object.hasOwn(intent, 'alg'), false)
   assert.equal(mlDsa.verify(await agent.getPublicKey(), relayMessage(intent, null), intent.signature), true)
@@ -145,6 +185,21 @@ test('an agent exported by 1.0.8, before ML-DSA-87, still imports, signs and ver
   const intent = await captureIntent(agent)
   assert.equal(Object.hasOwn(intent, 'alg'), false)
   assert.equal(mlDsa.verify(await agent.getPublicKey(), relayMessage(intent, null), intent.signature), true)
+})
+
+test('an existing ML-DSA-65 agent key keeps signing and verifying as ML-DSA-65 under the new default', async () => {
+  const agent = await KxcoAgentIdentity.import(LEGACY.exported)
+  assert.equal(agent.alg, 'ML-DSA-65')
+  const pk = await agent.getPublicKey()
+  assert.equal(pk.length, 1952)
+  const sig = await agent.sign(new TextEncoder().encode('still 65'))
+  assert.equal(sig.length, 3309)
+  assert.equal(mlDsa.verify(pk, 'still 65', Buffer.from(sig).toString('hex')), true)
+  assert.equal(mlDsa87.verify(pk, 'still 65', Buffer.from(sig).toString('hex')), false)
+  // Exported and imported again, it is still the same ML-DSA-65 agent.
+  const again = await KxcoAgentIdentity.import(JSON.parse(JSON.stringify(agent.export())))
+  assert.equal(again.alg, 'ML-DSA-65')
+  assert.equal(again.kid, fingerprint(pk))
 })
 
 // The credential bytes rebuilt from the published layout: v1.1 replaces the

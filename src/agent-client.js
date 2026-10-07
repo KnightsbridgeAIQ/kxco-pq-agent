@@ -1,6 +1,6 @@
 import { KxcoPqAgentError } from './errors.js'
 import { canonicalize }     from './jcs.js'
-import { DEFAULT_ALG }      from './alg.js'
+import { V1_ALG }           from './alg.js'
 
 const enc = new TextEncoder()
 
@@ -54,7 +54,7 @@ function buildSigningMessage(operation, agentKid, sponsorKid, nonce, timestamp, 
  * AgentChainClient — relay client for KxcoAgentIdentity.
  *
  * Sends ML-DSA signed intents to the KXCO relay's /agent-intents endpoint, in
- * the agent key's parameter set (ML-DSA-65 by default, or ML-DSA-87).
+ * the agent key's parameter set (ML-DSA-87 for a new agent by default, or ML-DSA-65).
  * Each request includes the agent's signed credential so the relay can verify
  * the sponsor's authorisation and enforce scope.
  *
@@ -117,7 +117,8 @@ export class AgentChainClient {
     const agentKid       = this.#agent.kid
     const sponsorKid     = this.#agent.sponsorKid
 
-    const alg      = this.#agent.alg === undefined || this.#agent.alg === DEFAULT_ALG ? null : this.#agent.alg
+    // An agent that names no set is read as v1, ML-DSA-65, as before.
+    const alg      = this.#agent.alg === undefined || this.#agent.alg === V1_ALG ? null : this.#agent.alg
     const msg      = buildSigningMessage(operation, agentKid, sponsorKid, nonce, timestamp, credentialHash, payload, alg)
     const sigBytes = await this.#agent.sign(msg)
     const signature = Buffer.from(sigBytes).toString('hex')

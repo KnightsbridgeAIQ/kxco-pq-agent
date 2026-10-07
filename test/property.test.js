@@ -18,7 +18,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import fc from 'fast-check'
-import { mlDsa, fingerprint } from 'kxco-post-quantum'
+import { mlDsa, mlDsa87, fingerprint } from 'kxco-post-quantum'
 import { KxcoAgentIdentity, KxcoPqAgentError, validateScope, checkScope, hashScope } from '../src/index.js'
 import { canonicalize } from '../src/jcs.js'
 
@@ -486,7 +486,9 @@ test('export then import: the restored identity is the same agent and signs as i
       loaded.label === label &&
       canonicalize(loaded.scope) === canonicalize(sc) &&
       canonicalize(loaded.credential) === canonicalize(agent.credential) &&
-      mlDsa.verify(await agent.getPublicKey(), msg, Buffer.from(sig).toString('hex')) === true &&
+      // A new agent is ML-DSA-87 by default.
+      loaded.alg === 'ML-DSA-87' &&
+      mlDsa87.verify(await agent.getPublicKey(), msg, Buffer.from(sig).toString('hex')) === true &&
       again.valid === true
   }), SIGNING)
 })

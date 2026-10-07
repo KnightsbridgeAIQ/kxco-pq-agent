@@ -67,13 +67,13 @@ export function checkScope(scope: AgentScope, action: ScopeAction): ScopeDecisio
 
 // ── Credential envelope ───────────────────────────────────────────────────────
 
-/** The ML-DSA parameter sets an agent or sponsor key can be. ML-DSA-65 is the default. */
-export type AgentAlgorithm = 'ML-DSA-65' | 'ML-DSA-87'
+/** The ML-DSA parameter sets an agent or sponsor key can be. A new agent key is ML-DSA-87 by default. */
+export type AgentAlgorithm = 'ML-DSA-87' | 'ML-DSA-65'
 
 export interface AgentCredential {
   'kxco-agent':     string
   agentKid:         string
-  agentPublicKey:   string   // base64url ML-DSA-65 or ML-DSA-87 public key
+  agentPublicKey:   string   // base64url ML-DSA-87 or ML-DSA-65 public key
   sponsorKid:       string
   agentType:        'llm' | 'robot' | 'iot' | 'process'
   label:            string
@@ -139,7 +139,7 @@ export interface CreateAgentOptions {
   expiresIn:  string | number
   /** KxcoChain instance (from kxco-pq-chain) for on-chain registration. */
   chain?:     { issueAgentCredential(opts: object): Promise<AgentRelayResult> }
-  /** The agent key's parameter set. Defaults to 'ML-DSA-65'. */
+  /** The agent key's parameter set. Defaults to 'ML-DSA-87'; pass 'ML-DSA-65' for the old default. */
   alg?:       AgentAlgorithm
 }
 

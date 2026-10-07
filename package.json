@@ -1,6 +1,6 @@
 {
   "name": "kxco-pq-agent",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Post-quantum identity for AI agents: a KYC-verified institution sponsors an ML-DSA-87 or ML-DSA-65 key and a locked capability scope, enforced at the relay and offline by checkScope(). For LLMs, robots, IoT devices and daemons, with mandatory expiry.",
   "keywords": [
     "post-quantum",
