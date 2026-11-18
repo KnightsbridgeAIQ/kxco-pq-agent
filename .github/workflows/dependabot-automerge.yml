@@ -1,0 +1,55 @@
+name: Dependabot auto-merge
+on: pull_request
+
+# Read-only by default. The one job that needs to write raises exactly what
+# it needs, so a compromised action in any other step cannot reach further
+# than reading the checkout.
+permissions:
+  contents: read
+
+jobs:
+  automerge:
+    permissions:
+      contents: write
+      pull-requests: write
+    name: automerge
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      # Declining to auto-merge is a routine, expected outcome, not a fault. It
+      # used to `exit 1`, which painted the run red and sent a failure
+      # notification for every bump a person was meant to review anyway. The
+      # decision below is unchanged; only the way it reports is.
+      - name: Decide whether this bump may auto-merge
+        id: decide
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          decline () { echo "$1"; echo "automerge=no" >> "$GITHUB_OUTPUT"; exit 0; }
+          vers=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -2)
+          count=$(echo "$vers" | grep -c . || true)
+          if [ "$count" -ne 2 ]; then decline "cannot parse versions - leaving for human review"; fi
+          from=$(echo "$vers" | sed -n 1p)
+          to=$(echo "$vers" | sed -n 2p)
+          fromMajor=$(echo "$from" | cut -d. -f1); toMajor=$(echo "$to" | cut -d. -f1)
+          if [ "$fromMajor" != "$toMajor" ]; then
+            decline "major bump ($from -> $to) - leaving for human review"
+          fi
+          # Under semver a 0.x minor bump may break, and comparing only the major
+          # component treats 0.6.1 -> 0.7.0 as routine. That is not routine here:
+          # the principal dependency is 0.x, and @noble/post-quantum changed its
+          # sign/verify argument order within 0.6.x. That bump must be reviewed by
+          # a person, not merged because the leading zero matched.
+          if [ "$fromMajor" = "0" ]; then
+            fromMinor=$(echo "$from" | cut -d. -f2); toMinor=$(echo "$to" | cut -d. -f2)
+            if [ "$fromMinor" != "$toMinor" ]; then
+              decline "0.x minor bump ($from -> $to) is breaking-capable - leaving for human review"
+            fi
+          fi
+          echo "patch-level bump ($from -> $to) - eligible for auto-merge"
+          echo "automerge=yes" >> "$GITHUB_OUTPUT"
+      - name: Enable auto-merge (merges when required checks pass)
+        if: steps.decide.outputs.automerge == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
