@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege at the top level. Without this the workflow inherits the
+# repository default, which may be read-write, and every job gets a token
+# with more authority than it uses. Jobs that need more raise it themselves.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+
+      # The test output goes into the job summary as well as the log. v1.2.2
+      # failed on Node 20 and 22 and passed on 24, and the log is only
+      # readable with admin rights on the repository, so the failure could be
+      # seen but not read. A summary is public to anyone who can see the run,
+      # which is what a failing build should be.
+      # The failing assertion is emitted as a workflow annotation, not only
+      # into the log. Downloading a run log needs admin rights on the
+      # repository, so a red build was visible but unreadable to anyone else.
+      # Annotations are readable by anyone who can see the run.
+      - name: Run the test suite
+        run: |
+          set +e
+          npm test 2>&1 | tee /tmp/test-output.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            msg=$(grep -E 'not ok [0-9]|AssertionError|expected|actual:|operator:|code:|error:' \
+                    /tmp/test-output.txt | head -25 | sed 's/%/%25/g; s/\r/ /g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Node ${{ matrix.node }} test failure::${msg}"
+          fi
+          exit "$status"
